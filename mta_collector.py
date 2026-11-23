@@ -25,7 +25,7 @@ import unittest
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-BASE = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct/"
+BASE = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2F/"
 FEEDS = {
     "1234567": "gtfs", "ace": "gtfs-ace", "bdfm": "gtfs-bdfm",
     "g": "gtfs-g", "jz": "gtfs-jz", "l": "gtfs-l", "nqrw": "gtfs-nqrw",
