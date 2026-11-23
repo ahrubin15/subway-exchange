@@ -1,0 +1,52 @@
+
+name: MTA Collector — Live Smoke Test
+
+on:
+  push:
+    branches: [development]
+    paths:
+      - 'mta_collector.py'
+      - '.github/workflows/mta-collector-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-and-archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out development branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run offline decoder tests
+        run: python mta_collector.py --self-test
+
+      - name: Try a real MTA feed fetch
+        id: fetch
+        run: python mta_collector.py --once --feed 1234567 --out-dir mta-data
+
+      - name: Explain result
+        if: always()
+        run: |
+          echo 'This run is a one-time connection/decoder smoke test, not recurring collection.'
+          echo 'The archived GTFS-RT times are predictions, NOT verified arrivals.'
+          echo 'Live fetch step outcome: ${{ steps.fetch.outcome }}'
+          if [ -f mta-data/collection-log.jsonl ]; then
+            cat mta-data/collection-log.jsonl
+          fi
+
+      - name: Keep sample data and diagnostics for inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mta-feed-smoke-test
+          path: mta-data/
+          if-no-files-found: warn
+          retention-days: 3
