@@ -1,0 +1,35 @@
+
+name: Token Ledger Foundation — Research Tests
+
+on:
+  push:
+    branches: [development]
+    paths:
+      - 'ledger_sim.py'
+      - '0001_core_schema.sql'
+      - '.github/workflows/ledger-foundation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-ledger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: development
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run atomic ledger prototype tests
+        run: python ledger_sim.py --self-test
+
+      - name: Flag accidental production claims
+        run: |
+          grep -q 'NOT YET DEPLOYED' 0001_core_schema.sql
+          grep -q 'NO ticket settlement' arrival_candidates.py || grep -q 'NEVER use' arrival_candidates.py
