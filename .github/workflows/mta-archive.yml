@@ -1,0 +1,134 @@
+name: MTA — Archive Live Feed
+
+# GitHub only runs schedules from the default branch (main).
+# This workflow intentionally checks out the collector from development.
+on:
+  push:
+    branches: [development]
+    paths: ['.github/workflows/mta-archive.yml']
+  schedule:
+    - cron: '7,22,37,52 * * * *'  # Every 15 minutes, UTC; timing is best-effort
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: subway-exchange-mta-archive
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Check out collector from development
+        uses: actions/checkout@v4
+        with:
+          ref: development
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install storage client
+        run: python -m pip install 'boto3>=1.34,<2'
+
+      - name: Check private storage credentials
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          python - <<'PY'
+          import os
+          names = ('R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET')
+          absent = [name for name in names if not os.environ.get(name)]
+          if absent:
+              raise SystemExit('Storage secrets not configured: ' + ', '.join(absent))
+          print('All four R2 settings are present; values are not printed.')
+          PY
+
+      - name: Run local decoder tests
+        run: python mta_collector.py --self-test
+
+      - name: Capture one live numbered-lines feed
+        id: collect
+        # On failure, continue to archive the diagnostic log below.
+        continue-on-error: true
+        run: python mta_collector.py --once --feed 1234567 --out-dir mta-data
+
+      - name: Upload raw snapshots and health reports to private R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import boto3
+          root = Path('mta-data')
+          log_file = root / 'collection-log.jsonl'
+          if not log_file.exists():
+              raise SystemExit('No collection log was produced; refusing to report archival success.')
+          entries = [json.loads(line) for line in log_file.read_text().splitlines() if line.strip()]
+          if not entries:
+              raise SystemExit('Collection log is empty.')
+          r2 = boto3.client(
+              's3',
+              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
+              aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
+              region_name='auto',
+          )
+          bucket = os.environ['R2_BUCKET']
+          # The same run's archive objects are overwritten if that run is retried.
+          prefix = f"subway-exchange/collection-runs/{os.environ['RUN_ID']}-{os.environ['RUN_ATTEMPT']}"
+          files = sorted(path for path in root.rglob('*') if path.is_file())
+          for path in files:
+              key = f'{prefix}/{path.relative_to(root).as_posix()}'
+              content_type = 'application/json' if path.suffix == '.json' else 'application/octet-stream'
+              if path.name.endswith('.jsonl'):
+                  content_type = 'application/x-ndjson'
+              r2.upload_file(str(path), bucket, key, ExtraArgs={'ContentType': content_type})
+              print(f'Archived {key} ({path.stat().st_size} bytes)')
+          health = {
+              'run_id': os.environ['RUN_ID'],
+              'run_attempt': os.environ['RUN_ATTEMPT'],
+              'feed': '1234567',
+              'records': entries,
+              'raw_snapshot_files': sum(p.name.endswith('.pb.gz') for p in files),
+          }
+          r2.put_object(Bucket=bucket, Key=f'{prefix}/health.json',
+                        Body=json.dumps(health, separators=(',', ':')).encode(),
+                        ContentType='application/json')
+          # Reject stale observations as a healthy run, even if archival succeeded.
+          if any(e.get('status') != 'ok' or e.get('stale_warning', True) for e in entries):
+              raise SystemExit('Archival completed, but live MTA feed failed or was stale. Check health.json.')
+          if not any(p.name.endswith('.pb.gz') for p in files):
+              raise SystemExit('No raw protobuf archive was saved.')
+          print('Raw MTA data and health diagnostics safely archived in private R2.')
+          PY
+
+      - name: Ensure live collection succeeded
+        if: always() && steps.collect.outcome != 'success'
+        run: |
+          echo 'MTA collection failed. See the collector log and R2 health.json.'
+          exit 1
+
+      - name: Keep short-lived backup diagnostics in GitHub
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mta-archive-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: mta-data/collection-log.jsonl
+          retention-days: 7
+          if-no-files-found: ignore
