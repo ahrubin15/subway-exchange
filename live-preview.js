@@ -6,7 +6,7 @@ window.SubwayLivePreview = {
     const url = 'https://jxymdjkzbjntfbbyjdfa.supabase.co';
     const key = 'sb_publishable_DA9X9DoNOhoBYFMdVGh7JQ_Rzk_xRPI';
     const safe = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    const fmt = v => (Number(v)/10000).toLocaleString('en-US',{maximumFractionDigits:2})+'%';
+    const fmt = v => (Number(v)/10000).toLocaleString('en-US',{maximumFractionDigits:0})+'%';
     const time = v => new Date(v).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit',second:'2-digit'});
     const bullet = '<span class="roundel small" style="--bg:#00933C;--fg:white">6</span>';
     const restored=new URLSearchParams(location.search).get('classic')!=='0';
@@ -17,7 +17,13 @@ window.SubwayLivePreview = {
       const el=document.querySelector(sel); if(el)el.hidden=true;
     }
     const app=document.querySelector('.app'); if(app)app.style.gridTemplateColumns='minmax(0,760px)';
-    const box=document.querySelector('.tokenbox'); if(box)box.title='Backend available Tokens';
+    const box=document.querySelector('.tokenbox');
+    if(box){
+      box.title='Backend available Tokens (rounded for display)';
+      box.innerHTML=tokenMark().replace('class="mini-token"','class="token-svg"')+'<div class="live-token-stack"><strong id="headerBalance">&mdash;</strong><button type="button" id="liveLogout" hidden>Sign out</button></div>';
+      const style=document.createElement('style');style.textContent='.live-token-stack{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;line-height:1.15}.live-token-stack #liveLogout{font:inherit;font-size:10px;line-height:1.15;color:var(--muted,#a7b6c8);text-decoration:underline;text-underline-offset:2px;background:none;border:0;padding:2px 3px;cursor:pointer}.live-token-stack #liveLogout[hidden]{display:none!important}.live-token-stack #liveLogout:focus-visible{outline:2px solid #FFCB23;outline-offset:2px}.live-signed-money{display:inline-flex;align-items:center;gap:3px;vertical-align:middle;white-space:nowrap}';document.head.appendChild(style);
+      document.getElementById('liveLogout').onclick=()=>logout();
+    }
     document.getElementById('headerBalance').textContent='\u2014';
     async function request(path,body,token) {
       const headers={apikey:key,'Content-Type':'application/json'};
@@ -32,6 +38,7 @@ window.SubwayLivePreview = {
     const rpc=(name,token,body={})=>request('/rest/v1/rpc/'+name,body,token);
     function signInView(message='') {
       document.querySelector('.sticky-nav').hidden=true;
+      const signOut=document.getElementById('liveLogout');if(signOut)signOut.hidden=true;
       main.innerHTML='<div class="pagehead"><h1>Live Market Preview</h1></div><div class="notice">Development access only. Sign in with your existing verified test account. Virtual Tokens only; test predictions may be placed.</div><form id="liveLogin" class="shell-section"><label class="form-label" for="liveEmail">Email</label><input class="field" id="liveEmail" type="email" autocomplete="username" required><label class="form-label" for="livePassword">Password</label><input class="field" id="livePassword" type="password" autocomplete="current-password" required><button class="btn fill" style="margin-top:14px" type="submit">Sign In</button><p id="liveLoginStatus" role="status">'+safe(message)+'</p></form><p class="fineprint">Credentials go directly to Supabase. This preview does not persist the session on this device.</p>';
       document.getElementById('liveLogin').addEventListener('submit',async e=>{
         e.preventDefault();
@@ -47,8 +54,8 @@ window.SubwayLivePreview = {
       });
     }
     function renderShell(){
-      main.innerHTML='<div class="pagehead"><div><h1>Lines</h1><p id="liveUser"></p></div><button id="liveLogout" class="tiny-action">Sign Out</button></div><div class="ticker"><span>\u25cf <strong>LIVE MTA DATA</strong> \u00b7 Test trading</span></div><section class="shell-section"><div class="section-label"><h2>Choose Your Line</h2><span class="dashes"></span></div><div class="routebar"><span class="roundel" style="--bg:#00933C;--fg:white">6</span></div><div class="chiprow"><span class="chip is-on">Next Train</span></div></section><section class="shell-section"><div class="section-label"><h2>Available Markets</h2><span class="dashes"></span><button id="liveRefresh" class="tiny-action">Refresh</button></div><p id="liveStatus" role="status">Loading live markets\u2026</p><div id="liveCards" class="cards"></div><p class="fineprint">Virtual Tokens only. Independent of the MTA. Arrival evidence is evaluated using provisional test rules.</p></section>';
-      document.getElementById('liveLogout').onclick=()=>logout();
+      main.innerHTML='<div class="pagehead"><div><h1>Lines</h1><p id="liveUser"></p></div></div><div class="ticker"><span>\u25cf <strong>LIVE MTA DATA</strong> \u00b7 Test trading</span></div><section class="shell-section"><div class="section-label"><h2>Choose Your Line</h2><span class="dashes"></span></div><div class="routebar"><span class="roundel" style="--bg:#00933C;--fg:white">6</span></div><div class="chiprow"><span class="chip is-on">Next Train</span></div></section><section class="shell-section"><div class="section-label"><h2>Available Markets</h2><span class="dashes"></span><button id="liveRefresh" class="tiny-action">Refresh</button></div><p id="liveStatus" role="status">Loading live markets\u2026</p><div id="liveCards" class="cards"></div><p class="fineprint">Virtual Tokens only. Independent of the MTA. Arrival evidence is evaluated using provisional test rules.</p></section>';
+      const signOut=document.getElementById('liveLogout');if(signOut)signOut.hidden=false;
       document.getElementById('liveRefresh').onclick=()=>refresh();
       const sections=[...main.querySelectorAll('section.shell-section')];
       sections.forEach(el=>el.dataset.liveLines='true');
@@ -165,14 +172,14 @@ window.SubwayLivePreview = {
         for(const r of state.rows)state.board.set(r.market_id,r);
         state.updated=new Date(Date.now()+state.offset).toISOString();state.error='';
         document.getElementById('liveUser').textContent=state.player.username+' \u00b7 Test account required for market access';
-        document.getElementById('headerBalance').textContent=(Number(state.player.available_minor)/100).toLocaleString('en-US',{maximumFractionDigits:2});
+        document.getElementById('headerBalance').textContent=(Number(state.player.available_minor)/100).toLocaleString('en-US',{maximumFractionDigits:0});
       }catch(e){
         if(gen!==state.generation)return;
         if(e.status===401||e.status===403){logout('Session expired or access unavailable. Sign in again.');return;}
         state.error='Live data unavailable. Retrying automatically.';document.getElementById('headerBalance').textContent='\u2014';
       }finally{if(gen===state.generation){state.busy=false;renderRows();}}
     }
-    const tokens=v=>v==null||!Number.isFinite(Number(v))?'\u2014':(Number(v)/100).toLocaleString('en-US',{maximumFractionDigits:2})+' T';
+    const tokens=v=>v==null||!Number.isFinite(Number(v))?'\u2014':(Number(v)/100).toLocaleString('en-US',{maximumFractionDigits:0})+' T';
     const signed=v=>v==null||!Number.isFinite(Number(v))?'\u2014':(Number(v)>0?'+':'')+tokens(v);
     const tone=v=>v==null?'':Number(v)>0?'up':Number(v)<0?'down':'';
     const dateTime=v=>v?new Date(v).toLocaleString('en-US',{timeZone:'America/New_York',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+' ET':'\u2014';
@@ -190,7 +197,7 @@ window.SubwayLivePreview = {
       if(tab==='portfolio'){renderPortfolio();refreshPortfolio();}else{renderRows();refresh();}
     }
     const minor=v=>v==null||!Number.isFinite(Number(v))?NaN:Number(v);
-    const signedCash=v=>Number.isFinite(minor(v))?(minor(v)>0?'+':minor(v)<0?'\u2212':'')+cash(Math.abs(minor(v))):'\u2014';
+    const signedCash=v=>Number.isFinite(minor(v))?`<span class="live-signed-money">${minor(v)!==0?'<span>'+(minor(v)>0?'+':'\u2212')+'</span>':''}${cash(Math.abs(minor(v)))}</span>`:'\u2014';
     function ticketEvidence(t){
       const e=t.evidence||{}, a=e.arrival_evidence||{};
       if(!e.research_market_id)return '<p>Test settlement. No live arrival evidence is associated with this ticket.</p>';
@@ -238,7 +245,7 @@ window.SubwayLivePreview = {
         if(gen!==state.generation)return;
         if(!Array.isArray(tickets)||(players&&(!Array.isArray(players)||players.length!==1)))throw Error('Unexpected portfolio response');
         observeSettlements(tickets);state.tickets=tickets;state.portfolioError='';
-        if(players&&state.tab==='portfolio'){state.player=players[0];document.getElementById('headerBalance').textContent=(Number(state.player.available_minor)/100).toLocaleString('en-US',{maximumFractionDigits:2});}
+        if(players&&state.tab==='portfolio'){state.player=players[0];document.getElementById('headerBalance').textContent=(Number(state.player.available_minor)/100).toLocaleString('en-US',{maximumFractionDigits:0});}
       }catch(e){
         if(gen!==state.generation)return;
         if(e.status===401||e.status===403){logout('Session expired or access unavailable. Sign in again.');return;}
@@ -248,8 +255,8 @@ window.SubwayLivePreview = {
 
     const routeColors={ALL:'#3e526a','1':'#EE352E','2':'#EE352E','3':'#EE352E','4':'#00933C','5':'#00933C','6':'#00933C','7':'#B933AD',A:'#0039A6',C:'#0039A6',E:'#0039A6',B:'#FF6319',D:'#FF6319',F:'#FF6319',M:'#FF6319',G:'#6CBE45',J:'#996633',Z:'#996633',L:'#A7A9AC',N:'#FCCC0A',Q:'#FCCC0A',R:'#FCCC0A',W:'#FCCC0A',S:'#808183'};
     const classicBullet=(r,size='')=>`<span class="roundel ${size}" style="--bg:${routeColors[r]||'#3e526a'};--fg:${['N','Q','R','W'].includes(r)?'#17253a':'#fff'}">${safe(r)}</span>`;
-    const tokenMark=()=>'<svg class="mini-token" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18.5" fill="#FFCB23"/><circle cx="20" cy="20" r="13.5" fill="none" stroke="#B78308" stroke-width="2"/></svg>';
-    const cash=n=>Number.isFinite(n)?`<span class="money-inline">${tokenMark()}<span>${(n/100).toLocaleString('en-US',{maximumFractionDigits:2})}</span></span>`:'\u2014';
+    function tokenMark(){return '<svg class="mini-token" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18.5" fill="#FFCB23"/><circle cx="20" cy="20" r="13.5" fill="none" stroke="#B78308" stroke-width="2"/></svg>';}
+    const cash=n=>Number.isFinite(n)?`<span class="money-inline">${tokenMark()}<span>${(n/100).toLocaleString('en-US',{maximumFractionDigits:0})}</span></span>`:'\u2014';
     const lockText=r=>{const n=Math.max(0,Math.ceil((Date.parse(r.lock_at)-Date.now()-state.offset)/1000));return Math.floor(n/60)+':'+String(n%60).padStart(2,'0');};
     function restoreLines(){
       const sections=main.querySelectorAll('[data-live-lines]');
@@ -292,7 +299,9 @@ window.SubwayLivePreview = {
     function missedTrain(){const p=state.purchase,host=document.getElementById('livePurchase');if(!p||!host||p.stage==='missed')return;p.stage='missed';host.innerHTML='<div class="backdrop"></div><section class="modal" role="dialog" aria-modal="true" aria-label="Market locked"><div class="market-line">'+classicBullet('6')+'<h3>You Missed Your Train!</h3></div><p>This market has already locked. No Tokens were deducted. Catch the next one!</p><button class="btn fill" id="backToLines">Back to Lines</button></section>';host.querySelector('#backToLines').onclick=()=>{closePurchase();switchTab('lines');};}
     function priceOffer(p,q){const host=document.getElementById('livePurchase');p.stageBeforeOffer=p.stage==='offer'?p.stageBeforeOffer:p.stage;p.stage='offer';p.offered=q;
       const gain=x=>cash(Math.floor(p.stake*100*1000000/x.ask_ppm+.5)-p.stake*100);
-      host.innerHTML=`<div class="backdrop"></div><section class="modal" role="dialog" aria-modal="true" aria-label="Odds have changed"><h3>Odds Have Changed</h3><p>Your ${safe(p.side)} price has changed.</p><div class="summary-grid"><div class="summary-box"><small>Previous price</small><strong>${fmt(p.quote.ask_ppm)}</strong><small>Profit ${gain(p.quote)}</small></div><div class="summary-box"><small>New price</small><strong>${fmt(q.ask_ppm)}</strong><small>Profit ${gain(q)}</small></div></div><p id="offerStatus" role="status"></p><button class="btn fill" id="acceptPrice">Accept New Price</button><button class="btn secondary fill" id="rejectPrice">Reject New Price</button></section>`;
+      const sameRounded=fmt(p.quote.ask_ppm)===fmt(q.ask_ppm);
+      const offerPrice=x=>sameRounded?(x/10000).toLocaleString('en-US',{maximumFractionDigits:4})+'%':fmt(x);
+      host.innerHTML=`<div class="backdrop"></div><section class="modal" role="dialog" aria-modal="true" aria-label="Odds have changed"><h3>Odds Have Changed</h3><p>Your ${safe(p.side)} price has changed.${sameRounded?' Exact prices are shown because both round to the same whole number.':''}</p><div class="summary-grid"><div class="summary-box"><small>Previous price</small><strong>${offerPrice(p.quote.ask_ppm)}</strong><small>Profit ${gain(p.quote)}</small></div><div class="summary-box"><small>New price</small><strong>${offerPrice(q.ask_ppm)}</strong><small>Profit ${gain(q)}</small></div></div><p id="offerStatus" role="status"></p><button class="btn fill" id="acceptPrice">Accept New Price</button><button class="btn secondary fill" id="rejectPrice">Reject New Price</button></section>`;
       host.querySelector('#rejectPrice').onclick=()=>{closePurchase();switchTab('lines');};
       host.querySelector('#acceptPrice').onclick=()=>{const r=state.error?null:visibleRows().find(x=>x.market_id===p.market.market_id),latest=r?.quotes[p.side];if(!latest||latest.ask_ppm!==p.offered.ask_ppm){updateClassic();return;}p.quote=latest;p.market=r;p.stage=p.stageBeforeOffer;p.offered=null;p.failure='';p.key=crypto.randomUUID();renderClassicPurchase();};
     }
@@ -306,7 +315,7 @@ window.SubwayLivePreview = {
       const close='<button class="modal-close" id="liveCancel" aria-label="Close">&times;</button>';
       const summaries=`<div class="summary-grid detail-summary"><div class="summary-box"><small>Risk</small><strong id="classicRisk"></strong></div><div class="summary-box"><small>Return</small><strong id="classicReturn"></strong></div><div class="summary-box"><small>Profit</small><strong id="classicProfit"></strong></div></div>`;
       if(p.stage==='detail')host.innerHTML=`<div class="backdrop" data-live-dismiss></div><section class="modal" role="dialog" aria-modal="true" aria-label="Market details"><div class="modal-head minimal-modal-head">${close}</div><div class="market-line">${classicBullet('6')}<div><div class="card-meta">Next Train &middot; Locks in <span id="classicLock">${lockText(r)}</span></div><h3>${safe(r.question)}</h3></div></div><div class="deal-prices">${['YES','NO'].map(side=>`<button class="side-select ${side==='NO'?'no ':''}${p.side===side?'selected':''}" data-side="${side}">${side}<strong>${fmt(r.quotes[side].ask_ppm)}</strong></button>`).join('')}</div><div class="stats-booth"><div class="t">&#9734; Quick Stats</div><div class="statsgrid"><div><span>Market</span><strong>Next Train</strong></div><div><span>YES price</span><strong>${fmt(r.quotes.YES.ask_ppm)}</strong></div><div><span>Station</span><strong>${safe(r.station)}</strong></div></div><details class="history-explain"><summary>Historical Explanation</summary><p>Live odds are provisional estimates from MTA data. Historical calibration is not yet available.</p></details></div><label class="form-label">Tokens to risk ${tokenMark()}</label><div class="stakes">${[10,25,50,100].map(n=>`<button class="stake ${!p.custom&&p.stake===n?'selected':''}" data-stake="${n}">${tokenMark()} ${n}</button>`).join('')}<button class="stake ${p.custom?'selected':''}" id="liveOther">Other</button></div>${p.custom?`<label class="form-label" for="liveStake">Custom stake</label><input class="field" id="liveStake" type="number" min="10" max="250" step="1" inputmode="numeric" value="${Number.isFinite(p.stake)?p.stake:''}">`:''}<p id="liveQuoteStatus" class="stake-error" role="status"></p>${summaries}<button class="btn fill" id="reviewPick">Review My Pick</button><details class="market-rules"><summary>Market Rules</summary><div class="rule"><strong>Observation:</strong> Selected ${safe(r.direction)} 6 train at ${safe(r.station)}.</div><div class="rule"><strong>Settlement:</strong> Conservative arrival evidence; uncertain evidence causes VOID and full refund.</div><div class="rule"><strong>Source:</strong> Live MTA data, provisional test rules. Virtual Tokens only.</div></details></section>`;
-      else host.innerHTML=`<div class="backdrop" data-live-dismiss></div><section class="sheet rh-sheet" role="dialog" aria-modal="true" aria-label="Review ticket"><button class="slip-back" id="liveEdit">&#8249; Edit</button><div class="slip-sub">SUBWAY EXCHANGE &middot; LIVE TEST TICKET</div><div class="slip-head">Review My Pick</div><div class="slip-stub"><div class="market-line" style="display:flex;align-items:center;gap:12px">${classicBullet('6')}<div><strong>Next Train</strong><div class="muted" style="font-size:12px;margin-top:4px">${safe(r.question)}</div></div></div><div class="detail-line"><span>Your pick</span><strong>${safe(p.side)} &middot; ${fmt(p.quote.ask_ppm)}</strong></div><div class="detail-line"><span>Risk</span><strong>${cash(p.stake*100)}</strong></div><div class="detail-line"><span>Return if correct</span><strong>${cash(Math.floor(p.stake*100*1000000/p.quote.ask_ppm+.5))}</strong></div><div class="slip-total"><span>Profit if correct</span><strong>+${cash(Math.floor(p.stake*100*1000000/p.quote.ask_ppm+.5)-p.stake*100)}</strong></div></div><p id="liveQuoteStatus" role="status"></p><div id="swipeZone" class="rh-swipe" role="button" tabindex="0" aria-label="Swipe up to punch ticket"><div class="swipe-glyph">&#8593;</div><div class="swipe-text">Swipe up to punch ticket</div><div class="swipe-sub">Slide from here to submit</div></div><button class="btn fill" id="liveRetry" hidden>Retry same request</button><p class="slip-footnote">Live MTA data &middot; No real money</p></section><div id="swipeProgress" class="swipe-progress" aria-hidden="true"></div>`;
+      else host.innerHTML=`<div class="backdrop" data-live-dismiss></div><section class="sheet rh-sheet" role="dialog" aria-modal="true" aria-label="Review ticket"><button class="slip-back" id="liveEdit">&#8249; Edit</button><div class="slip-sub">SUBWAY EXCHANGE &middot; LIVE TEST TICKET</div><div class="slip-head">Review My Pick</div><div class="slip-stub"><div class="market-line" style="display:flex;align-items:center;gap:12px">${classicBullet('6')}<div><strong>Next Train</strong><div class="muted" style="font-size:12px;margin-top:4px">${safe(r.question)}</div></div></div><div class="detail-line"><span>Your pick</span><strong>${safe(p.side)} &middot; ${fmt(p.quote.ask_ppm)}</strong></div><div class="detail-line"><span>Risk</span><strong>${cash(p.stake*100)}</strong></div><div class="detail-line"><span>Return if correct</span><strong>${cash(Math.floor(p.stake*100*1000000/p.quote.ask_ppm+.5))}</strong></div><div class="slip-total"><span>Profit if correct</span><strong>${signedCash(Math.floor(p.stake*100*1000000/p.quote.ask_ppm+.5)-p.stake*100)}</strong></div></div><p id="liveQuoteStatus" role="status"></p><div id="swipeZone" class="rh-swipe" role="button" tabindex="0" aria-label="Swipe up to punch ticket"><div class="swipe-glyph">&#8593;</div><div class="swipe-text">Swipe up to punch ticket</div><div class="swipe-sub">Slide from here to submit</div></div><button class="btn fill" id="liveRetry" hidden>Retry same request</button><p class="slip-footnote">Live MTA data &middot; No real money</p></section><div id="swipeProgress" class="swipe-progress" aria-hidden="true"></div>`;
       host.querySelector('[data-live-dismiss]').onclick=()=>closePurchase();
       const cancel=document.getElementById('liveCancel');if(cancel)cancel.onclick=()=>closePurchase();
       host.querySelectorAll('[data-side]').forEach(b=>b.onclick=()=>{if(state.purchaseBusy||p.uncertain)return;const latest=state.error?null:visibleRows().find(x=>x.market_id===r.market_id);if(!latest)return;p.side=b.dataset.side;p.quote=latest.quotes[p.side];p.market=latest;p.failure='';renderClassicPurchase();});
