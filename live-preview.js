@@ -28,33 +28,77 @@ window.SubwayLivePreview = {
       document.getElementById('liveLogout').onclick=()=>logout();
     }
     document.getElementById('headerBalance').textContent='\u2014';
-    async function request(path,body,token) {
-      const headers={apikey:key,'Content-Type':'application/json'};
-      if(token)headers.Authorization='Bearer '+token;
-      const ctrl=new AbortController(), timer=setTimeout(()=>ctrl.abort(),12000);
-      try {
-        const res=await fetch(url+path,{method:'POST',headers,body:JSON.stringify(body),cache:'no-store',signal:ctrl.signal});
-        if(!res.ok){const e=new Error('Request failed');e.status=res.status;throw e;}
-        return await res.json();
-      } finally {clearTimeout(timer);}
+    // Persistent authentication uses the official Supabase client and a dedicated alpha storage key.
+    let authClient=null, authUserId=null, authStarting=false, authSigningOut=false, authReady=false;
+    const authStorageKey='subway-exchange-live-auth-v1';
+    const verifiedUser=u=>!!u?.email_confirmed_at&&!u.is_anonymous;
+    const redirectUrl=()=>{const target=new URL(location.origin+location.pathname);target.searchParams.set('live','1');return target.href;};
+    async function rpc(name,token,body={}){
+      const gen=state.generation,uid=authUserId;
+      if(!authClient||!token||!state.token||!uid)throw Object.assign(new Error('Session unavailable'),{status:401});
+      const {data,error}=await authClient.auth.getSession();
+      if(error||!data.session||data.session.user.id!==uid||gen!==state.generation||uid!==authUserId)throw Object.assign(new Error('Session unavailable'),{status:401});
+      const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),12000);
+      try{
+        const result=await authClient.rpc(name,body).abortSignal(ctrl.signal);
+        if(result.error)throw Object.assign(new Error('Request failed'),{status:result.status});
+        if(gen!==state.generation)throw Error('Session changed');
+        return result.data;
+      }finally{clearTimeout(timer);}
     }
-    const rpc=(name,token,body={})=>request('/rest/v1/rpc/'+name,body,token);
-    function signInView(message='') {
+    function signInView(message='',register=false){
       document.querySelector('.sticky-nav').hidden=true;
       const signOut=document.getElementById('liveLogout');if(signOut)signOut.hidden=true;
-      main.innerHTML='<div class="pagehead"><h1>Live Market Preview</h1></div><div class="notice">Development access only. Sign in with your existing verified test account. Virtual Tokens only; test predictions may be placed.</div><form id="liveLogin" class="shell-section"><label class="form-label" for="liveEmail">Email</label><input class="field" id="liveEmail" type="email" autocomplete="username" required><label class="form-label" for="livePassword">Password</label><input class="field" id="livePassword" type="password" autocomplete="current-password" required><button class="btn fill" style="margin-top:14px" type="submit">Sign In</button><p id="liveLoginStatus" role="status">'+safe(message)+'</p></form><p class="fineprint">Credentials go directly to Supabase. This preview does not persist the session on this device.</p>';
-      document.getElementById('liveLogin').addEventListener('submit',async e=>{
-        e.preventDefault();
-        const form=e.currentTarget, btn=form.querySelector('button'), password=document.getElementById('livePassword');
-        if(btn.disabled)return;btn.disabled=true;
-        document.getElementById('liveLoginStatus').textContent='Signing in\u2026';
-        try {
-          const data=await request('/auth/v1/token?grant_type=password',{email:document.getElementById('liveEmail').value.trim(),password:password.value});
-          if(!data.access_token)throw Error('Missing session');
-          state.token=data.access_token;state.generation++;password.value='';state.accountEmail=typeof data.user?.email==='string'?data.user.email:'';
-          renderShell();await collectRewards();await Promise.all([refresh(),refreshPortfolio()]);
-        }catch(err){password.value='';btn.disabled=false;const status=document.getElementById('liveLoginStatus');if(status)status.textContent='Sign-in failed. Check your test-account credentials or connection.';}
-      });
+      main.innerHTML=`<div class="pagehead"><h1>${register?'Create Account':'Sign In'}</h1></div><div class="notice">Private alpha. Virtual Tokens only. Live trading requires alpha approval.</div><form id="liveLogin" class="shell-section"><label class="form-label" for="liveEmail">Email</label><input class="field" id="liveEmail" type="email" autocomplete="email" required><label class="form-label" for="livePassword">Password</label><input class="field" id="livePassword" type="password" autocomplete="${register?'new-password':'current-password'}" ${register?'minlength="12"':''} required>${register?'<p class="fineprint">Use at least 12 characters. Verify your email before signing in.</p>':''}<button class="btn fill" style="margin-top:14px" type="submit">${register?'Create Account':'Sign In'}</button><p id="liveLoginStatus" role="status">${safe(message)}</p></form><button class="btn secondary fill" id="liveAuthToggle">${register?'Already have an account? Sign In':'New to Subway Exchange? Create Account'}</button><p class="fineprint">Your session stays signed in on this browser until you sign out or it is invalidated.</p>`;
+      document.getElementById('liveAuthToggle').onclick=()=>signInView('',!register);
+      document.getElementById('liveLogin').onsubmit=async e=>{
+        e.preventDefault();if(authStarting||authSigningOut||!authClient)return;
+        const form=e.currentTarget,btn=form.querySelector('button'),password=document.getElementById('livePassword'),email=document.getElementById('liveEmail').value.trim();
+        if(btn.disabled)return;btn.disabled=true;authStarting=true;
+        const toggle=document.getElementById('liveAuthToggle');toggle.disabled=true;
+        document.getElementById('liveLoginStatus').textContent=register?'Creating account...':'Signing in...';
+        try{
+          if(register){
+            const {data,error}=await authClient.auth.signUp({email,password:password.value,options:{emailRedirectTo:redirectUrl()}});if(error)throw error;
+            if(data.session&&verifiedUser(data.user)){await enterSession(data.session);}
+            else{if(data.session)await authClient.auth.signOut({scope:'local'});signInView('Check your email for a verification link. Once verified, sign in.');}
+          }else{
+            const {data,error}=await authClient.auth.signInWithPassword({email,password:password.value});if(error||!data.session)throw error||Error('No session');
+            if(!verifiedUser(data.user)){await authClient.auth.signOut({scope:'local'});signInView('Please verify your email before signing in.');return;}
+            await enterSession(data.session);
+          }
+        }catch(err){if(!state.token){const status=document.getElementById('liveLoginStatus');if(status)status.textContent=register?'Account creation could not be confirmed. Check your email or try signing in.':'Sign-in failed. Check your credentials, email verification or connection.';}else{showToast('Account setup unavailable. Refresh to retry.');}}
+        finally{password.value='';authStarting=false;if(btn.isConnected)btn.disabled=false;if(toggle.isConnected)toggle.disabled=false;}
+      };
+    }
+    async function enterSession(session){
+      if(!verifiedUser(session?.user))throw Error('Verified account required');
+      if(state.token&&authUserId===session.user.id){state.token=session.access_token;return;}
+      authUserId=session.user.id;state.token=session.access_token;state.generation++;state.accountEmail=session.user.email||'';
+      const gen=state.generation;
+      try{
+        const playerId=await rpc('initialize_my_player',state.token);if(!playerId)throw Error('Player unavailable');
+        if(gen!==state.generation)return;
+        renderShell();await collectRewards();await Promise.all([refresh(),refreshPortfolio()]);
+      }catch(err){if(gen===state.generation){state.token=null;authUserId=null;state.generation++;main.innerHTML='<div class="notice">Account setup could not be completed. Your session is retained.</div><button class="btn fill" id="retryAuth">Retry</button>';document.getElementById('retryAuth').onclick=()=>location.reload();}throw err;}
+    }
+    async function bootAuth(){
+      main.innerHTML='<div class="notice" role="status">Restoring your session...</div>';
+      try{
+        const {createClient}=await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/+esm');
+        authClient=createClient(url,key,{auth:{storageKey:authStorageKey,persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
+        authClient.auth.onAuthStateChange((event,session)=>{
+          // Do not await Supabase calls inside this callback (the SDK holds an auth lock).
+          if(!authReady||authStarting||authSigningOut)return;
+          if(event==='SIGNED_OUT'&&!session){setTimeout(()=>{if(state.token)clearLocalSession('Session ended. Sign in again.');},0);}
+          else if(session&&session.user.id===authUserId){state.token=session.access_token;}
+          else if(session&&session.user.id!==authUserId){setTimeout(()=>location.reload(),0);}
+        });
+        const {data,error}=await authClient.auth.getSession();if(error)throw error;
+        authReady=true;
+        if(data.session&&verifiedUser(data.session.user)){await enterSession(data.session);}
+        else{if(data.session)await authClient.auth.signOut({scope:'local'});signInView(data.session?'Please verify your email before signing in.':'');}
+      }catch(e){main.innerHTML='<div class="notice" role="status">Unable to restore authentication. Check your connection and retry. Your saved session has not been deliberately cleared.</div><button class="btn fill" id="retryAuth">Retry</button>';document.getElementById('retryAuth').onclick=()=>location.reload();}
     }
     function renderShell(){
       main.innerHTML='<div class="pagehead"><div><h1>Lines</h1><p id="liveUser"></p></div></div><div class="ticker"><span>\u25cf <strong>LIVE MTA DATA</strong> \u00b7 Test trading</span></div><section class="shell-section"><div class="section-label"><h2>Choose Your Line</h2><span class="dashes"></span></div><div class="routebar"><span class="roundel" style="--bg:#00933C;--fg:white">6</span></div><div class="chiprow"><span class="chip is-on">Next Train</span></div></section><section class="shell-section"><div class="section-label"><h2>Available Markets</h2><span class="dashes"></span><button id="liveRefresh" class="tiny-action">Refresh</button></div><p id="liveStatus" role="status">Loading live markets\u2026</p><div id="liveCards" class="cards"></div><p class="fineprint">Virtual Tokens only. Independent of the MTA. Arrival evidence is evaluated using provisional test rules.</p></section>';
@@ -81,12 +125,19 @@ window.SubwayLivePreview = {
       if(restored)restoreLines();
       const notice=document.createElement('p');notice.id='liveTradeNotice';notice.setAttribute('role','status');main.insertBefore(notice,main.querySelector('.ticker'));
     }
-    function logout(message='Signed out.') {
-      if(state.purchaseBusy||state.purchase?.uncertain)return;
+    async function logout(message='Signed out.') {
+      if(state.purchaseBusy||state.purchase?.uncertain||authSigningOut)return;
+      authSigningOut=true;const button=document.getElementById('liveLogout');if(button)button.disabled=true;
+      try{const {error}=await authClient.auth.signOut({scope:'local'});if(error)throw error;clearLocalSession(message);}
+      catch(e){showToast('Sign out could not be confirmed. Please retry.');}
+      finally{authSigningOut=false;if(button)button.disabled=false;}
+    }
+    function clearLocalSession(message){
+      authUserId=null;
       document.getElementById('livePurchase')?.remove();document.body.classList.remove('modal-open');
       const token=state.token;state.generation++;state.token=null;state.rows=[];state.board.clear();clearTimeout(state.toastTimer);const toastSlot=document.getElementById('toastSlot');if(toastSlot)toastSlot.innerHTML='';state.settlementSeen=null;state.expandedTickets.clear();state.evidenceTickets.clear();state.player=null;state.error='';state.updated=null;state.busy=false;state.tickets=null;state.portfolioError='';state.portfolioBusy=false;state.tab='lines';state.portfolioTab='active';state.purchase=null;state.purchaseBusy=false;state.notice='';state.rewards=null;state.avatarLine="6";state.receipts=null;state.avatarBusy=false;state.rewardInfo=false;state.meBusy=false;state.meError='';state.meDraft=null;state.accountEmail='';state.rewardBusy=false;state.socialEpoch++;state.socialBusy=false;state.crews=[];state.crewRows=[];state.rankRows=[];state.crewId=null;state.inviteCode='';state.crewSettings=false;state.socialError='';document.getElementById('liveSocialStyle')?.remove();document.getElementById('weeklyCelebrate')?.remove();
       document.getElementById('headerBalance').textContent='\u2014';signInView(message);
-      if(token)fetch(url+'/auth/v1/logout?scope=local',{method:'POST',headers:{apikey:key,Authorization:'Bearer '+token}}).catch(()=>{});
+
     }
     function visibleRows(){
       const now=Date.now()+state.offset;
@@ -185,7 +236,7 @@ window.SubwayLivePreview = {
         document.getElementById('headerBalance').textContent=(Number(state.player.available_minor)/100).toLocaleString('en-US',{maximumFractionDigits:0});
       }catch(e){
         if(gen!==state.generation)return;
-        if(e.status===401||e.status===403){logout('Session expired or access unavailable. Sign in again.');return;}
+        if(e.status===401){state.error='Session temporarily unavailable. Reconnecting...';return;}
         state.error='Live data unavailable. Retrying automatically.';document.getElementById('headerBalance').textContent='\u2014';
       }finally{if(gen===state.generation){state.busy=false;renderRows();}}
     }
@@ -259,7 +310,7 @@ window.SubwayLivePreview = {
         if(players&&state.tab===startedTab){state.player=players[0];document.getElementById('headerBalance').textContent=(Number(state.player.available_minor)/100).toLocaleString('en-US',{maximumFractionDigits:0});}
       }catch(e){
         if(gen!==state.generation)return;
-        if(e.status===401||e.status===403){logout('Session expired or access unavailable. Sign in again.');return;}
+        if(e.status===401){state.error='Session temporarily unavailable. Reconnecting...';return;}
         state.portfolioError='Unavailable';
       }finally{if(gen===state.generation){state.portfolioBusy=false;renderPortfolio();renderMe();}}
     }
@@ -422,7 +473,7 @@ window.SubwayLivePreview = {
       const decisive=all.filter(t=>['WON','LOST'].includes(t.status));const win=decisive.length?Math.round(decisive.filter(t=>t.status==='WON').length/decisive.length*100):0;
       const draft=state.meDraft??(/^guest_/i.test(player?.username||'')?'':player?.username??'');
       const focused=document.activeElement?.id==='myName',cursor=focused?document.activeElement.selectionStart:null;
-      const markup=`<div class="profile-hero">${classicBullet(state.avatarLine,'large')}<div><h2>${safe(/^guest_/i.test(player?.username||'')?'Guest Rider':player?.username||'Your profile')}</h2><p>Private test account</p><small class="muted">${safe(state.accountEmail||'Signed-in account')}</small></div></div><div class="summary-grid"><div class="summary-box"><small>Portfolio</small><strong>${ready?cash(minor(player?.available_minor)+risk):'&mdash;'}</strong></div><div class="summary-box"><small>Weekly P/L</small><strong class="${tone(net)}">${ready?signedCash(net):'&mdash;'}</strong></div><div class="summary-box"><small>Win Rate</small><strong>${ready?win+'%':'&mdash;'}</strong></div></div><p class="intro-note">Test prediction statistics. Voids excluded from win rate.</p><section class="shell-section"><div class="section-label"><h2>My Profile</h2><span class="dashes"></span></div><label class="form-label" for="myName">Username</label><div class="inputrow"><input class="field" id="myName" placeholder="Choose a username" maxlength="40" autocomplete="off" value="${safe(draft)}" ${state.meBusy?'disabled':''}><button class="btn small" id="saveName" ${state.meBusy||!player||draft===player.username||!/^[A-Za-z0-9_]{3,40}$/.test(draft)||/^guest_/i.test(draft)?'disabled':''}>Save</button></div><p class="fineprint">3&ndash;40 letters, numbers or underscores.</p></section><section class="shell-section"><div class="section-label"><h2>My Avatar</h2><span class="dashes"></span></div><p class="intro-note">Pick the subway roundel shown by your username. Change it anytime.</p><div class="avatar-grid">${Object.keys(routeColors).filter(r=>r!=='ALL').map(r=>`<button type="button" data-avatar-line="${r}" aria-label="Select ${r} avatar" aria-pressed="${state.avatarLine===r}" ${state.avatarBusy||state.meBusy||!player?'disabled':''}>${classicBullet(r)}</button>`).join('')}</div></section><section class="shell-section"><div class="section-label"><h2>My Rewards</h2><button type="button" class="info-icon" id="liveRewardsInfo" aria-label="How rewards work" aria-expanded="${state.rewardInfo}">i</button><span class="dashes"></span></div>${state.rewardInfo?'<div class="reward-info" role="region" aria-label="How rewards work"><strong>How Rewards Work</strong><p>Daily Reward: Receive 50 Tokens when you sign in each day. Resets at midnight ET.</p><p>Weekly Reward: Receive 1,000 Tokens when you sign in each week. Resets every Sunday at midnight ET.</p><p>Rewards collect automatically, once per period. Unclaimed rewards do not accumulate.</p></div>':''}${['DAILY_GRANT','WEEKLY_GRANT'].map(kind=>{const g=state.rewards?.find(x=>x.reward_kind===kind),receipt=state.receipts?.find(x=>x.reward_kind===kind),done=g?.available===false;return `<div class="reward-row"><span class="reward-check ${done?'':'pending'}" role="img" aria-label="${done?'Received':g?'Not yet received':'Checking status'}">${done?'&#9745;':'&#9744;'}</span><span>${kind==='DAILY_GRANT'?'Daily Reward':'Weekly Reward'}<small class="muted" style="display:block">Last Received: ${receipt?.last_received_at?safe(dateTime(receipt.last_received_at)):state.receipts?'Never':'Checking...'}</small><small class="muted" style="display:block">Next Reset: ${g?safe(dateTime(g.next_reset_at)):'Checking...'}</small></span><strong>${cash(kind==='DAILY_GRANT'?5000:100000)}</strong></div>`}).join('')}${state.meError&&state.meError.includes('Reward')||state.rewards?.some(g=>g.available)?`<button class="btn secondary fill" id="liveClaim" ${state.rewardBusy||state.meBusy?'disabled':''}>Collect Available Rewards</button>`:''}<p class="fineprint">Rewards collect automatically on sign-in. Reset times follow New York time.</p></section><section class="shell-section"><div class="section-label"><h2>Station Services</h2><span class="dashes"></span></div><p class="intro-note">Your account is saved on the server.</p><button class="btn secondary fill" id="liveMeRefresh" ${state.meBusy?'disabled':''}>Refresh Account</button></section>${state.meError?`<p class="notice" role="status">${safe(state.meError)}</p>`:''}`;
+      const markup=`<div class="profile-hero">${classicBullet(state.avatarLine,'large')}<div><h2>${safe(/^guest_/i.test(player?.username||'')?'Guest Rider':player?.username||'Your profile')}</h2><p>Private alpha account</p><small class="muted">${safe(state.accountEmail||'Signed-in account')}</small></div></div><div class="summary-grid"><div class="summary-box"><small>Portfolio</small><strong>${ready?cash(minor(player?.available_minor)+risk):'&mdash;'}</strong></div><div class="summary-box"><small>Weekly P/L</small><strong class="${tone(net)}">${ready?signedCash(net):'&mdash;'}</strong></div><div class="summary-box"><small>Win Rate</small><strong>${ready?win+'%':'&mdash;'}</strong></div></div><p class="intro-note">Test prediction statistics. Voids excluded from win rate.</p><section class="shell-section"><div class="section-label"><h2>My Profile</h2><span class="dashes"></span></div><label class="form-label" for="myName">Username</label><div class="inputrow"><input class="field" id="myName" placeholder="Choose a username" maxlength="40" autocomplete="off" value="${safe(draft)}" ${state.meBusy?'disabled':''}><button class="btn small" id="saveName" ${state.meBusy||!player||draft===player.username||!/^[A-Za-z0-9_]{3,40}$/.test(draft)||/^guest_/i.test(draft)?'disabled':''}>Save</button></div><p class="fineprint">3&ndash;40 letters, numbers or underscores.</p></section><section class="shell-section"><div class="section-label"><h2>My Avatar</h2><span class="dashes"></span></div><p class="intro-note">Pick the subway roundel shown by your username. Change it anytime.</p><div class="avatar-grid">${Object.keys(routeColors).filter(r=>r!=='ALL').map(r=>`<button type="button" data-avatar-line="${r}" aria-label="Select ${r} avatar" aria-pressed="${state.avatarLine===r}" ${state.avatarBusy||state.meBusy||!player?'disabled':''}>${classicBullet(r)}</button>`).join('')}</div></section><section class="shell-section"><div class="section-label"><h2>My Rewards</h2><button type="button" class="info-icon" id="liveRewardsInfo" aria-label="How rewards work" aria-expanded="${state.rewardInfo}">i</button><span class="dashes"></span></div>${state.rewardInfo?'<div class="reward-info" role="region" aria-label="How rewards work"><strong>How Rewards Work</strong><p>Daily Reward: Receive 50 Tokens when you sign in each day. Resets at midnight ET.</p><p>Weekly Reward: Receive 1,000 Tokens when you sign in each week. Resets every Sunday at midnight ET.</p><p>Rewards collect automatically, once per period. Unclaimed rewards do not accumulate.</p></div>':''}${['DAILY_GRANT','WEEKLY_GRANT'].map(kind=>{const g=state.rewards?.find(x=>x.reward_kind===kind),receipt=state.receipts?.find(x=>x.reward_kind===kind),done=g?.available===false;return `<div class="reward-row"><span class="reward-check ${done?'':'pending'}" role="img" aria-label="${done?'Received':g?'Not yet received':'Checking status'}">${done?'&#9745;':'&#9744;'}</span><span>${kind==='DAILY_GRANT'?'Daily Reward':'Weekly Reward'}<small class="muted" style="display:block">Last Received: ${receipt?.last_received_at?safe(dateTime(receipt.last_received_at)):state.receipts?'Never':'Checking...'}</small><small class="muted" style="display:block">Next Reset: ${g?safe(dateTime(g.next_reset_at)):'Checking...'}</small></span><strong>${cash(kind==='DAILY_GRANT'?5000:100000)}</strong></div>`}).join('')}${state.meError&&state.meError.includes('Reward')||state.rewards?.some(g=>g.available)?`<button class="btn secondary fill" id="liveClaim" ${state.rewardBusy||state.meBusy?'disabled':''}>Collect Available Rewards</button>`:''}<p class="fineprint">Rewards collect automatically on sign-in. Reset times follow New York time.</p></section><section class="shell-section"><div class="section-label"><h2>Station Services</h2><span class="dashes"></span></div><p class="intro-note">Your account is saved on the server.</p><button class="btn secondary fill" id="liveMeRefresh" ${state.meBusy?'disabled':''}>Refresh Account</button></section>${state.meError?`<p class="notice" role="status">${safe(state.meError)}</p>`:''}`;
       if(el.dataset.rendered===markup)return;el.dataset.rendered=markup;el.innerHTML=markup;
       const input=el.querySelector('#myName'),save=el.querySelector('#saveName');input.oninput=()=>{state.meDraft=input.value;save.disabled=state.meBusy||!player||input.value===player.username||!/^[A-Za-z0-9_]{3,40}$/.test(input.value)||/^guest_/i.test(input.value);};save.onclick=()=>saveUsername();if(focused&&!input.disabled){input.focus({preventScroll:true});if(cursor!==null)input.setSelectionRange(cursor,cursor);}
       el.querySelector('#liveRewardsInfo').onclick=()=>{state.rewardInfo=!state.rewardInfo;renderMe();};el.querySelectorAll('[data-avatar-line]').forEach(b=>b.onclick=()=>saveAvatar(b.dataset.avatarLine));
@@ -455,7 +506,7 @@ window.SubwayLivePreview = {
       const el=document.getElementById(tab==='crew'?'liveCrew':'liveRanks');if(!el)return;
       el.querySelector('dialog[open]')?.close();
       const busy=state.socialBusy?'disabled':'', error=state.socialError?`<p class="notice" role="status">${safe(state.socialError)} <button class="tiny-action" data-social-action="refresh">Retry</button></p>`:'';
-      const period=(value)=>`<select class="field" aria-label="Ranking period" id="liveRankPeriod" style="width:auto;min-width:0;padding:6px 10px;font-size:12px" ${busy}><option value="WEEKLY" ${value==='WEEKLY'?'selected':''}>Weekly</option><option value="ALL_TIME" ${value==='ALL_TIME'?'selected':''}>All Time</option></select>`;
+      const period=(value)=>`<select class="field" aria-label="Ranking period" id="liveRankPeriod" style="width:auto;min-width:0;padding:6px 28px 6px 10px;font-size:12px;appearance:none;-webkit-appearance:none;background-image:url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2216%22 height=%2216%22 viewBox=%220 0 24 24%22%3E%3Cpath d=%22m6 9 6 6 6-6%22 fill=%22none%22 stroke=%22%23dce7f0%22 stroke-width=%222.5%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E');background-position:right 7px center;background-repeat:no-repeat" ${busy}><option value="WEEKLY" ${value==='WEEKLY'?'selected':''}>Weekly</option><option value="ALL_TIME" ${value==='ALL_TIME'?'selected':''}>All Time</option></select>`;
       const heading=(title,value)=>`<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 0"><h2 class="rank-title compact-rank-title" style="margin:0">${title}</h2>${period(value)}</div>`;
       if(tab==='ranks'){
         el.innerHTML=socialTabs([['players','Riders'],['crews','Crews']],state.rankType)+heading(state.rankType==='crews'?'Crew Standings':'Trading Profit',state.rankPeriod)+error+(state.socialBusy?'<p role="status">Loading standings...</p>':socialRows(state.rankRows,state.rankType==='crews'))+'<p class="fineprint">Private alpha: test prediction P/L only. Rewards excluded. Crew scores are averages per eligible member. Weeks reset Sunday, New York time.</p>';
@@ -509,7 +560,7 @@ window.SubwayLivePreview = {
       finally{if(gen===state.generation){state.socialBusy=false;if(ok)refreshSocial();else renderSocial();}}
     }
 
-    signInView();
+    bootAuth();
     setInterval(()=>{if(state.token&&!document.hidden){if(state.tab==='portfolio')renderPortfolio();else if(state.tab==='lines')renderRows();}},1000);
     setInterval(()=>{if(state.tab==='lines')refresh();refreshPortfolio();},5000);
     document.addEventListener('visibilitychange',()=>{if(!document.hidden){if(state.tab==='portfolio')refreshPortfolio();else if(state.tab==='me'){refreshMe();refreshPortfolio();}else if(['crew','ranks'].includes(state.tab)){refreshSocial();refreshPortfolio();}else{renderRows();refresh();refreshPortfolio();}}});
