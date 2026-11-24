@@ -1,0 +1,89 @@
+BEGIN;
+
+CREATE OR REPLACE FUNCTION public.leave_crew(p_crew uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+    v_player uuid;
+    v_captain uuid;
+    v_rows integer;
+BEGIN
+    SELECT id INTO v_player FROM public.players
+    WHERE auth_user_id = auth.uid();
+
+    IF v_player IS NULL THEN
+        RAISE EXCEPTION 'Authentication required';
+    END IF;
+
+    SELECT captain_id INTO v_captain
+    FROM public.leagues
+    WHERE id = p_crew FOR UPDATE;
+
+    IF v_captain IS NULL THEN RETURN false; END IF;
+
+    IF v_captain = v_player THEN
+        RAISE EXCEPTION 'Captain must transfer ownership before leaving';
+    END IF;
+
+    DELETE FROM public.league_members
+    WHERE league_id = p_crew
+    AND player_id = v_player;
+
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    RETURN v_rows = 1;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.remove_crew_member(
+    p_crew uuid, p_member uuid
+)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+    v_player uuid;
+    v_captain uuid;
+    v_rows integer;
+BEGIN
+    SELECT id INTO v_player FROM public.players
+    WHERE auth_user_id = auth.uid();
+
+    IF v_player IS NULL THEN
+        RAISE EXCEPTION 'Authentication required';
+    END IF;
+
+    SELECT captain_id INTO v_captain
+    FROM public.leagues
+    WHERE id = p_crew FOR UPDATE;
+
+    IF v_captain IS DISTINCT FROM v_player THEN
+        RAISE EXCEPTION 'Crew captain required';
+    END IF;
+
+    IF p_member IS NULL OR p_member = v_captain THEN
+        RAISE EXCEPTION 'Cannot remove captain';
+    END IF;
+
+    DELETE FROM public.league_members
+    WHERE league_id = p_crew
+    AND player_id = p_member;
+
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    RETURN v_rows = 1;
+END $$;
+
+REVOKE ALL ON FUNCTION
+    public.leave_crew(uuid),
+    public.remove_crew_member(uuid,uuid)
+FROM PUBLIC, anon, authenticated;
+
+GRANT EXECUTE ON FUNCTION
+    public.leave_crew(uuid),
+    public.remove_crew_member(uuid,uuid)
+TO authenticated;
+
+COMMIT;
