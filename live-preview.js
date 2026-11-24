@@ -9,6 +9,7 @@ window.SubwayLivePreview = {
     const fmt = v => (Number(v)/10000).toLocaleString('en-US',{maximumFractionDigits:2})+'%';
     const time = v => new Date(v).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit',second:'2-digit'});
     const bullet = '<span class="roundel small" style="--bg:#00933C;--fg:white">6</span>';
+    const restored=new URLSearchParams(location.search).get('classic')!=='0';
     const state = {token:null, rows:[], player:null, offset:0, error:'', busy:false, generation:0, updated:null,tab:'lines',portfolioTab:'active',tickets:null,portfolioError:'',portfolioBusy:false,purchase:null,purchaseBusy:false,notice:''};
     document.title='Subway Exchange \u00b7 Live Market Preview';
     document.querySelector('.demo-strip').textContent='PRIVATE ALPHA \u00b7 LIVE MTA DATA \u00b7 VIRTUAL TOKEN TEST TRADING';
@@ -59,11 +60,13 @@ window.SubwayLivePreview = {
       document.getElementById('liveLinesNav').onclick=()=>switchTab('lines');
       document.getElementById('livePortfolioNav').onclick=()=>switchTab('portfolio');
       state.tab='lines';
-      const panel=document.createElement('div');panel.id='livePurchase';panel.hidden=true;main.appendChild(panel);
+      const panel=document.createElement('div');panel.id='livePurchase';panel.hidden=true;(restored?document.getElementById('overlays'):main).appendChild(panel);
+      if(restored)restoreLines();
       const notice=document.createElement('p');notice.id='liveTradeNotice';notice.setAttribute('role','status');main.insertBefore(notice,main.querySelector('.ticker'));
     }
     function logout(message='Signed out.') {
-      if(state.purchaseBusy)return;
+      if(state.purchaseBusy||state.purchase?.uncertain)return;
+      document.getElementById('livePurchase')?.remove();document.body.classList.remove('modal-open');
       const token=state.token;state.generation++;state.token=null;state.rows=[];state.player=null;state.error='';state.updated=null;state.busy=false;state.tickets=null;state.portfolioError='';state.portfolioBusy=false;state.tab='lines';state.portfolioTab='active';state.purchase=null;state.purchaseBusy=false;state.notice='';
       document.getElementById('headerBalance').textContent='\u2014';signInView(message);
       if(token)fetch(url+'/auth/v1/logout?scope=local',{method:'POST',headers:{apikey:key,Authorization:'Bearer '+token}}).catch(()=>{});
@@ -73,6 +76,7 @@ window.SubwayLivePreview = {
       return state.rows.filter(r=>Date.parse(r.lock_at)>now&&r.quotes.YES&&r.quotes.NO&&['YES','NO'].every(side=>Date.parse(r.quotes[side].quote_expires_at)>now));
     }
     function renderRows(){
+      if(restored)return renderClassicRows();
       if(!state.token||!document.getElementById('liveCards')||state.tab!=='lines')return;
       const now=Date.now()+state.offset, rows=visibleRows();
       document.getElementById('liveStatus').textContent=state.error||(!state.updated?'Loading live markets...':rows.length?rows.length+' live test markets | Updated '+time(state.updated)+' ET':'No fresh tradable markets right now. Checking again automatically.');
@@ -94,6 +98,7 @@ window.SubwayLivePreview = {
       return [...grouped.values()];
     }
     function openPurchase(r,side){
+      if(restored)return openClassic(r,side);
       if(!r||state.purchase||state.purchaseBusy)return;
       const q=r.quotes[side];if(!q)return;
       state.purchase={market:r,side,quote:q,stake:10,key:crypto.randomUUID(),uncertain:false};
@@ -109,14 +114,16 @@ window.SubwayLivePreview = {
     }
     function closePurchase(){
       if(state.purchaseBusy||state.purchase?.uncertain)return;
-      state.purchase=null;const el=document.getElementById('livePurchase');if(el){el.hidden=true;el.innerHTML='';}renderRows();
+      state.purchase=null;document.body.classList.remove('modal-open');const el=document.getElementById('livePurchase');if(el){el.hidden=true;el.innerHTML='';}renderRows();
     }
     function purchaseValid(p){
+      if(!p.quote)return false;
       const now=Date.now()+state.offset;
       const current=visibleRows().find(r=>r.market_id===p.market.market_id)?.quotes[p.side];
       return !state.error&&current?.quote_id===p.quote.quote_id&&Date.parse(p.quote.quote_expires_at)>now&&Number.isInteger(p.stake)&&p.stake>=10&&p.stake<=250&&p.stake*100<=Number(state.player?.available_minor);
     }
     function updatePurchase(){
+      if(restored)return updateClassic();
       const p=state.purchase;if(!p||!document.getElementById('livePunch'))return;
       const valid=purchaseValid(p), gross=Math.floor(p.stake*100*1000000/p.quote.ask_ppm+0.5);
       document.getElementById('liveReturn').textContent=Number.isInteger(p.stake)&&p.stake>=10&&p.stake<=250?'Potential return: '+tokens(gross)+' | Potential profit: '+signed(gross-p.stake*100):'Enter a valid stake.';
@@ -134,7 +141,7 @@ window.SubwayLivePreview = {
         const id=await rpc('purchase_my_prediction',state.token,{p_request_key:p.key,p_quote:p.quote.quote_id,p_stake_minor:p.stake*100});
         if(gen!==state.generation)return;
         if(typeof id!=='string'||!id)throw Error('Unconfirmed purchase');
-        state.purchaseBusy=false;p.uncertain=false;closePurchase();
+        state.purchaseBusy=false;p.uncertain=false;closePurchase();if(restored)showClassicTrain();
         state.notice='Ticket punched! '+p.side+' | '+tokens(p.stake*100);document.getElementById('liveTradeNotice').textContent=state.notice;
         state.player=null;document.getElementById('headerBalance').textContent='-';state.portfolioTab='active';switchTab('portfolio');
       }catch(e){
@@ -151,6 +158,7 @@ window.SubwayLivePreview = {
         const [rows,players]=await Promise.all([rpc('get_open_markets',token),rpc('get_my_player',token)]);
         if(gen!==state.generation)return;
         if(!Array.isArray(rows)||!Array.isArray(players)||players.length!==1)throw Error('Unexpected response');
+        if(state.tab!=='lines')return;
         state.player=players[0];
         state.rows=groupMarkets(rows);
         state.updated=new Date(Date.now()+state.offset).toISOString();state.error='';
@@ -195,7 +203,7 @@ window.SubwayLivePreview = {
         const badge=t.status==='WON'?'win':t.status==='LOST'?'loss':done?'void':'pending';
         const pnl=done?'<strong class="'+tone(t.net_minor)+'">'+safe(signed(t.net_minor))+'</strong>':'';
         const status=done?t.status:(['LOCKED','VERIFYING'].includes(t.market_status)?t.market_status:t.status);
-        return '<details class="ticket" data-ticket="'+id+'" '+(expanded.has(t.ticket_id)?'open':'')+'><summary class="ticket-top" style="cursor:pointer;list-style:none"><div class="txt"><h3>'+safe(t.market_question||t.market_name||'Prediction')+'</h3><p>'+safe([t.station_name,t.route_id?'Line '+t.route_id:null,test?'TEST PREDICTION':null,t.side].filter(Boolean).join(' \u00b7 '))+'</p></div><div class="right"><span class="badge '+badge+'">'+safe(status)+(t.status==='WON'?' <span style="color:var(--gold)">\u2605</span>':'')+'</span>'+pnl+'</div><span aria-hidden="true">\u2304</span></summary><div class="ticket-detail">'+detail('Pick',t.side+' \u00b7 '+fmt(t.ask_ppm))+detail('Risked',tokens(t.stake_minor))+detail(done?'Returned':'Potential return',tokens(done?t.returned_minor:t.gross_win_minor))+detail(done?'Net':'Potential profit',done?signed(t.net_minor):signed(Number(t.gross_win_minor)-Number(t.stake_minor)),done?tone(t.net_minor):'')+detail('Accepted',dateTime(t.accepted_at))+(done?detail('Closed',dateTime(t.closed_at))+'<details class="history-explain" data-evidence="'+id+'" '+(evidenceOpen.has(t.ticket_id)?'open':'')+'><summary>How Was This Decided?</summary>'+(test?'<p>Backend test settlement; not verified MTA data.</p>':'')+detail('Outcome',t.outcome||'Not supplied')+detail('Reason',t.reason_code||'Not supplied')+(t.evidence&&Object.keys(t.evidence).length?'<pre style="white-space:pre-wrap;overflow-wrap:anywhere">'+safe(JSON.stringify(t.evidence,null,2))+'</pre>':'<p>No additional evidence recorded.</p>')+'</details>':'')+'</div></details>';
+        return '<details class="ticket" data-ticket="'+id+'" '+(expanded.has(t.ticket_id)?'open':'')+'><summary class="ticket-top" style="cursor:pointer;list-style:none"><div class="txt"><h3>'+safe(t.market_question||t.market_name||'Prediction')+'</h3><p>'+safe([t.station_name,t.route_id?'Line '+t.route_id:null,test?'TEST PREDICTION':null,t.side].filter(Boolean).join(' \u00b7 '))+'</p></div><div class="right"><span class="badge '+badge+'">'+safe(status)+(t.status==='WON'?' <span style="color:var(--gold)">\u2605</span>':'')+'</span>'+pnl+'</div><span aria-hidden="true">\u2304</span></summary><div class="ticket-detail">'+detail('Pick',t.side+' \u00b7 '+fmt(t.ask_ppm))+detail('Risked',tokens(t.stake_minor))+detail(done?'Returned':'Potential return',tokens(done?t.returned_minor:t.gross_win_minor))+detail(done?'Net':'Potential profit',done?signed(t.net_minor):signed(Number(t.gross_win_minor)-Number(t.stake_minor)),done?tone(t.net_minor):'')+detail('Accepted',dateTime(t.accepted_at))+(done?detail('Closed',dateTime(t.closed_at))+'<details class="history-explain" data-evidence="'+id+'" '+(evidenceOpen.has(t.ticket_id)?'open':'')+'><summary>How Was This Decided?</summary>'+(test?(t.evidence?.research_market_id?'<p>Live MTA observations, provisional arrival evidence.</p>':'<p>Synthetic test settlement.</p>'):'')+detail('Outcome',t.outcome||'Not supplied')+detail('Reason',t.reason_code||'Not supplied')+(t.evidence&&Object.keys(t.evidence).length?'<pre style="white-space:pre-wrap;overflow-wrap:anywhere">'+safe(JSON.stringify(t.evidence,null,2))+'</pre>':'<p>No additional evidence recorded.</p>')+'</details>':'')+'</div></details>';
       }).join(''));
       document.getElementById('liveActive').onclick=()=>{state.portfolioTab='active';renderPortfolio();};
       document.getElementById('liveHistory').onclick=()=>{state.portfolioTab='history';renderPortfolio();};
@@ -216,10 +224,84 @@ window.SubwayLivePreview = {
         state.tickets=null;state.portfolioError='Unavailable';
       }finally{if(gen===state.generation){state.portfolioBusy=false;renderPortfolio();}}
     }
+
+    const routeColors={ALL:'#3e526a','1':'#EE352E','2':'#EE352E','3':'#EE352E','4':'#00933C','5':'#00933C','6':'#00933C','7':'#B933AD',A:'#0039A6',C:'#0039A6',E:'#0039A6',B:'#FF6319',D:'#FF6319',F:'#FF6319',M:'#FF6319',G:'#6CBE45',J:'#996633',Z:'#996633',L:'#A7A9AC',N:'#FCCC0A',Q:'#FCCC0A',R:'#FCCC0A',W:'#FCCC0A',S:'#808183'};
+    const classicBullet=(r,size='')=>`<span class="roundel ${size}" style="--bg:${routeColors[r]||'#3e526a'};--fg:${['N','Q','R','W'].includes(r)?'#17253a':'#fff'}">${safe(r)}</span>`;
+    const tokenMark=()=>'<svg class="mini-token" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18.5" fill="#FFCB23"/><circle cx="20" cy="20" r="13.5" fill="none" stroke="#B78308" stroke-width="2"/></svg>';
+    const cash=n=>Number.isFinite(n)?`<span class="money-inline">${tokenMark()}<span>${(n/100).toLocaleString('en-US',{maximumFractionDigits:2})}</span></span>`:'\u2014';
+    const lockText=r=>{const n=Math.max(0,Math.ceil((Date.parse(r.lock_at)-Date.now()-state.offset)/1000));return Math.floor(n/60)+':'+String(n%60).padStart(2,'0');};
+    function restoreLines(){
+      const sections=main.querySelectorAll('[data-live-lines]');
+      sections[0].classList.add('filters-section');
+      sections[0].innerHTML=`<div class="section-label"><h2>Choose Your Line</h2><span class="dashes"></span></div><div class="routebar" role="group" aria-label="Filter markets by subway line">${Object.keys(routeColors).sort((a,b)=>a==='ALL'?-1:b==='ALL'?1:0).map(r=>`<button class="route-filter ${r==='6'?'is-on':''}" data-route="${r}" aria-pressed="${r==='6'}" aria-label="${r==='ALL'?'All lines':'Line '+r}${['ALL','6'].includes(r)?'':' unavailable'}" ${['ALL','6'].includes(r)?'':'disabled'}>${classicBullet(r,r==='ALL'?'all':'')}</button>`).join('')}</div><div class="chiprow" role="group" aria-label="Filter markets by category">${['All Types','Next Train','Beat the MTA','Rush Hour','Line Wars'].map(t=>`<button class="chip ${t==='Next Train'?'is-on':''}" data-type="${t}" aria-pressed="${t==='Next Train'}" ${['All Types','Next Train'].includes(t)?'':'disabled'}>${t}</button>`).join('')}</div>`;
+      sections[0].querySelectorAll('button:not(:disabled)').forEach(b=>b.onclick=()=>{b.parentElement.querySelectorAll('button').forEach(x=>{x.classList.toggle('is-on',x===b);x.setAttribute('aria-pressed',String(x===b));});});
+      sections[1].innerHTML='<p id="liveStatus" class="fineprint" role="status"></p><div id="liveCards"></div><p class="intro-note">Live Line 6 Next Train markets only. Other lines and types are not yet available.</p><button id="liveRefresh" class="tiny-action">Refresh</button>';
+      document.getElementById('liveRefresh').onclick=()=>refresh();
+      const style=document.createElement('style');style.textContent='[hidden]{display:none!important}.route-filter:disabled,.chip:disabled{opacity:.4;cursor:not-allowed}#livePurchase .rh-swipe{touch-action:none}#livePurchase .rh-swipe[aria-disabled="true"]{opacity:.5;pointer-events:none}';document.head.appendChild(style);
+    }
+    function renderClassicRows(){
+      if(!state.token||state.tab!=='lines'||!document.getElementById('liveCards'))return;
+      const rows=visibleRows();const host=document.getElementById('liveCards');
+      document.getElementById('liveStatus').textContent=state.error||(!state.updated?'Loading live markets...':rows.length?rows.length+' live test markets':'Checking for fresh tradable markets...');
+      const card=(r,featured)=>`<article class="market-card" data-market="${safe(r.market_id)}" role="button" tabindex="0" aria-label="Open ${safe(r.question)}"><div class="card-flex"><div class="card-info"><div class="card-question">${classicBullet('6','small')}<span class="card-title">${safe(r.question)}</span></div><div class="card-meta">${featured?'<span class="spot">&#9733; Featured &middot; </span>':''}Next Train<span class="meta-lock"> &middot; Locks in <span data-lock="${safe(r.market_id)}">${lockText(r)}</span></span></div></div><div class="card-side-buttons">${['YES','NO'].map(side=>`<button class="pricebtn ${side==='NO'?'no':''}" data-pick="${side}">${side} <b>${fmt(r.quotes[side].ask_ppm)}</b></button>`).join('')}</div></div></article>`;
+      const sig=rows.map(r=>r.market_id+':'+r.quotes.YES.quote_id+':'+r.quotes.NO.quote_id).join('|');
+      if(host.dataset.sig!==sig){host.dataset.sig=sig;host.innerHTML=rows.length?`<div class="section-label"><h2>Featured For You</h2><span class="dashes"></span></div><div class="cards">${card(rows[0],true)}</div>${rows.length>1?`<div class="section-label" style="margin-top:20px"><h2>More on the Board</h2><span class="dashes"></span></div><div class="cards">${rows.slice(1).map(r=>card(r,false)).join('')}</div>`:''}`:'<div class="empty">'+classicBullet('6')+'<h3>No Trains on This Track</h3><p>No fresh quotes right now. Checking automatically.</p></div>';
+        host.querySelectorAll('[data-market]').forEach(el=>{const open=side=>openPurchase(visibleRows().find(r=>r.market_id===el.dataset.market),side);el.onclick=e=>open(e.target.closest('[data-pick]')?.dataset.pick||null);el.onkeydown=e=>{if(e.target===el&&['Enter',' '].includes(e.key)){e.preventDefault();open(null);}};});}
+      host.querySelectorAll('[data-lock]').forEach(el=>{const r=rows.find(x=>x.market_id===el.dataset.lock);if(r)el.textContent=lockText(r);});updateClassic();
+    }
+    function openClassic(r,side){
+      if(!r||state.purchase||state.purchaseBusy)return;
+      state.purchase={market:r,side,quote:side?r.quotes[side]:null,stake:25,key:crypto.randomUUID(),uncertain:false,stage:'detail',custom:false};renderClassicPurchase();
+    }
+    function renderClassicPurchase(){
+      const p=state.purchase,host=document.getElementById('livePurchase');if(!p||!host)return;
+      host.hidden=false;document.body.classList.add('modal-open');const r=p.market;
+      const close='<button class="modal-close" id="liveCancel" aria-label="Close">&times;</button>';
+      const summaries=`<div class="summary-grid detail-summary"><div class="summary-box"><small>Risk</small><strong id="classicRisk"></strong></div><div class="summary-box"><small>Return</small><strong id="classicReturn"></strong></div><div class="summary-box"><small>Profit</small><strong id="classicProfit"></strong></div></div>`;
+      if(p.stage==='detail')host.innerHTML=`<div class="backdrop" data-live-dismiss></div><section class="modal" role="dialog" aria-modal="true" aria-label="Market details"><div class="modal-head minimal-modal-head">${close}</div><div class="market-line">${classicBullet('6')}<div><div class="card-meta">Next Train &middot; Locks in <span id="classicLock">${lockText(r)}</span></div><h3>${safe(r.question)}</h3></div></div><div class="deal-prices">${['YES','NO'].map(side=>`<button class="side-select ${side==='NO'?'no ':''}${p.side===side?'selected':''}" data-side="${side}">${side}<strong>${fmt(r.quotes[side].ask_ppm)}</strong></button>`).join('')}</div><div class="stats-booth"><div class="t">&#9734; Quick Stats</div><div class="statsgrid"><div><span>Market</span><strong>Next Train</strong></div><div><span>YES price</span><strong>${fmt(r.quotes.YES.ask_ppm)}</strong></div><div><span>Station</span><strong>${safe(r.station)}</strong></div></div><details class="history-explain"><summary>Historical Explanation</summary><p>Live odds are provisional estimates from MTA data. Historical calibration is not yet available.</p></details></div><label class="form-label">Tokens to risk ${tokenMark()}</label><div class="stakes">${[10,25,50,100].map(n=>`<button class="stake ${!p.custom&&p.stake===n?'selected':''}" data-stake="${n}">${tokenMark()} ${n}</button>`).join('')}<button class="stake ${p.custom?'selected':''}" id="liveOther">Other</button></div>${p.custom?`<label class="form-label" for="liveStake">Custom stake</label><input class="field" id="liveStake" type="number" min="10" max="250" step="1" inputmode="numeric" value="${Number.isFinite(p.stake)?p.stake:''}">`:''}<p id="liveQuoteStatus" class="stake-error" role="status"></p>${summaries}<button class="btn fill" id="reviewPick">Review My Pick</button><details class="market-rules"><summary>Market Rules</summary><div class="rule"><strong>Observation:</strong> Selected ${safe(r.direction)} 6 train at ${safe(r.station)}.</div><div class="rule"><strong>Settlement:</strong> Conservative arrival evidence; uncertain evidence causes VOID and full refund.</div><div class="rule"><strong>Source:</strong> Live MTA data, provisional test rules. Virtual Tokens only.</div></details></section>`;
+      else host.innerHTML=`<div class="backdrop" data-live-dismiss></div><section class="sheet rh-sheet" role="dialog" aria-modal="true" aria-label="Review ticket"><button class="slip-back" id="liveEdit">&#8249; Edit</button><div class="slip-sub">SUBWAY EXCHANGE &middot; LIVE TEST TICKET</div><div class="slip-head">Review My Pick</div><div class="slip-stub"><div class="market-line" style="display:flex;align-items:center;gap:12px">${classicBullet('6')}<div><strong>Next Train</strong><div class="muted" style="font-size:12px;margin-top:4px">${safe(r.question)}</div></div></div><div class="detail-line"><span>Your pick</span><strong>${safe(p.side)} &middot; ${fmt(p.quote.ask_ppm)}</strong></div><div class="detail-line"><span>Risk</span><strong>${cash(p.stake*100)}</strong></div><div class="detail-line"><span>Return if correct</span><strong>${cash(Math.floor(p.stake*100*1000000/p.quote.ask_ppm+.5))}</strong></div><div class="slip-total"><span>Profit if correct</span><strong>+${cash(Math.floor(p.stake*100*1000000/p.quote.ask_ppm+.5)-p.stake*100)}</strong></div></div><p id="liveQuoteStatus" role="status"></p><div id="swipeZone" class="rh-swipe" role="button" tabindex="0" aria-label="Swipe up to punch ticket"><div class="swipe-glyph">&#8593;</div><div class="swipe-text">Swipe up to punch ticket</div><div class="swipe-sub">Slide from here to submit</div></div><button class="btn fill" id="liveRetry" hidden>Retry same request</button><p class="slip-footnote">Live MTA data &middot; No real money</p></section><div id="swipeProgress" class="swipe-progress" aria-hidden="true"></div>`;
+      host.querySelector('[data-live-dismiss]').onclick=()=>closePurchase();
+      const cancel=document.getElementById('liveCancel');if(cancel)cancel.onclick=()=>closePurchase();
+      host.querySelectorAll('[data-side]').forEach(b=>b.onclick=()=>{if(state.purchaseBusy||p.uncertain)return;p.side=b.dataset.side;p.quote=r.quotes[p.side];renderClassicPurchase();});
+      host.querySelectorAll('[data-stake]').forEach(b=>b.onclick=()=>{p.stake=Number(b.dataset.stake);p.custom=false;renderClassicPurchase();});
+      const other=document.getElementById('liveOther');if(other)other.onclick=()=>{p.custom=true;p.stake=NaN;renderClassicPurchase();document.getElementById('liveStake')?.focus();};
+      const input=document.getElementById('liveStake');if(input)input.oninput=()=>{p.stake=input.value===''?NaN:Number(input.value);updateClassic();};
+      const review=document.getElementById('reviewPick');if(review)review.onclick=()=>{if(purchaseValid(p)){p.stage='slip';renderClassicPurchase();}};
+      const edit=document.getElementById('liveEdit');if(edit)edit.onclick=()=>{if(!state.purchaseBusy&&!p.uncertain){p.stage='detail';renderClassicPurchase();}};
+      const retry=document.getElementById('liveRetry');if(retry)retry.onclick=()=>submitPurchase(true);
+      if(p.stage==='slip')wireClassicSwipe();updateClassic();
+    }
+    function updateClassic(){
+      const p=state.purchase;if(!p)return;
+      const status=document.getElementById('liveQuoteStatus');if(!status)return;
+      const valid=purchaseValid(p),gross=valid?Math.floor(p.stake*100*1000000/p.quote.ask_ppm+.5):NaN;
+      status.textContent=state.purchaseBusy?'Submitting...':p.uncertain?'Result unknown. Retry the same request.':p.failure||(!p.side?'Choose YES or NO.':!Number.isInteger(p.stake)||p.stake<10||p.stake>250?'Enter 10-250 whole Tokens.':!valid?'Quote changed, expired, or balance insufficient. Close and select a fresh quote.':'Quote expires '+time(p.quote.quote_expires_at)+' ET');
+      for(const [id,v] of [['classicRisk',p.stake*100],['classicReturn',gross],['classicProfit',gross-p.stake*100]]){const el=document.getElementById(id);if(el)el.innerHTML=cash(v);}
+      const lock=document.getElementById('classicLock');if(lock)lock.textContent=lockText(p.market);
+      const review=document.getElementById('reviewPick');if(review)review.disabled=!valid||state.purchaseBusy||!!p.failure;
+      const zone=document.getElementById('swipeZone');if(zone){zone.setAttribute('aria-disabled',String(!valid||state.purchaseBusy||p.uncertain||!!p.failure));zone.tabIndex=valid&&!p.uncertain&&!p.failure&&!state.purchaseBusy?0:-1;}
+      const edit=document.getElementById('liveEdit');if(edit)edit.disabled=state.purchaseBusy||p.uncertain;
+      const retry=document.getElementById('liveRetry');if(retry){retry.hidden=!p.uncertain;retry.disabled=state.purchaseBusy;}
+    }
+    function wireClassicSwipe(){
+      const z=document.getElementById('swipeZone'),fill=document.getElementById('swipeProgress');if(!z||!fill)return;
+      let y=null,id=null,progress=0,base=null;
+      const allowed=()=>z.getAttribute('aria-disabled')!=='true'&&state.purchase?.stage==='slip';
+      const threshold=()=>Math.min(280,Math.max(155,window.innerHeight*.3));
+      const shape=d=>{progress=Math.max(0,d);fill.style.left=base.left+'px';fill.style.width=base.width+'px';fill.style.bottom=(window.innerHeight-base.bottom)+'px';fill.style.height=(base.height+progress)+'px';fill.style.opacity='1';fill.style.borderRadius='14px';z.classList.toggle('ready',progress>=threshold());};
+      const reset=()=>{fill.style.opacity='0';fill.style.height='0';z.classList.remove('ready','dragging');};
+      z.onpointerdown=e=>{if(!allowed())return;e.preventDefault();base=z.getBoundingClientRect();y=e.clientY;id=e.pointerId;shape(0);z.setPointerCapture(id);z.classList.add('dragging');};
+      z.onpointermove=e=>{if(y===null||id!==e.pointerId)return;e.preventDefault();shape(y-e.clientY);};
+      z.onpointerup=e=>{if(y===null||id!==e.pointerId)return;const done=progress>=threshold();y=null;id=null;reset();if(done&&allowed())submitPurchase();};
+      z.onpointercancel=()=>{y=null;id=null;reset();};
+      z.onkeydown=e=>{if(['Enter',' '].includes(e.key)){e.preventDefault();if(allowed())submitPurchase();}};
+    }
+    function showClassicTrain(){const el=document.createElement('div');el.className='train-overlay';el.innerHTML='<div class="train-stage"><div class="train"><div class="trainwindow"></div><div class="trainwindow"></div>'+classicBullet('6')+'<div class="trainwindow"></div></div></div><div class="train-label">TICKET PUNCHED</div>';document.body.appendChild(el);setTimeout(()=>el.remove(),2700);}
+
     signInView();
     setInterval(()=>{if(state.token&&!document.hidden)renderRows();},1000);
     setInterval(()=>{if(state.tab==='portfolio')refreshPortfolio();else refresh();},10000);
     document.addEventListener('visibilitychange',()=>{if(!document.hidden){if(state.tab==='portfolio')refreshPortfolio();else{renderRows();refresh();}}});
     return true;
-      }
+  }
 };
