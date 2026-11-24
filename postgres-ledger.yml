@@ -1,0 +1,48 @@
+name: PostgreSQL Ledger — Integration Tests
+on:
+  push:
+    branches: [development]
+    paths:
+      - '0001_core_schema.sql'
+      - '0002_internal_ledger.sql'
+      - 'pg_ledger_tests.sql'
+      - '.github/workflows/postgres-ledger.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  postgres-ledger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 15
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+    steps:
+      - name: Checkout development
+        uses: actions/checkout@v4
+        with:
+          ref: development
+      - name: Install PostgreSQL client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+      - name: Run schema and private transaction functions
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -f 0001_core_schema.sql
+          psql -X -v ON_ERROR_STOP=1 -f 0002_internal_ledger.sql
+      - name: Run atomic PostgreSQL ledger regression
+        run: psql -X -v ON_ERROR_STOP=1 -f pg_ledger_tests.sql
+      - name: Check offline prototype still passes
+        run: python ledger_sim.py --self-test
