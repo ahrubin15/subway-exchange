@@ -10,7 +10,7 @@ window.SubwayLivePreview = {
     const time = v => new Date(v).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit',second:'2-digit'});
     const bullet = '<span class="roundel small" style="--bg:#00933C;--fg:white">6</span>';
     const restored=new URLSearchParams(location.search).get('classic')!=='0';
-    const state = {token:null, rows:[], player:null, offset:0, error:'', busy:false, generation:0, updated:null,tab:'lines',portfolioTab:'active',tickets:null,portfolioError:'',portfolioBusy:false,purchase:null,purchaseBusy:false,notice:''};
+    const state = {token:null, rows:[], player:null, offset:0, error:'', busy:false, generation:0, updated:null,tab:'lines',portfolioTab:'active',tickets:null,portfolioError:'',portfolioBusy:false,purchase:null,purchaseBusy:false,notice:'',board:new Map(),toastTimer:null};
     document.title='Subway Exchange \u00b7 Live Market Preview';
     document.querySelector('.demo-strip').textContent='PRIVATE ALPHA \u00b7 LIVE MTA DATA \u00b7 VIRTUAL TOKEN TEST TRADING';
     for (const sel of ['#alertsBtn','.sticky-nav','.foot','.side']) {
@@ -56,7 +56,7 @@ window.SubwayLivePreview = {
       portfolio.id='livePortfolio';portfolio.className='shell-section';portfolio.hidden=true;
       main.appendChild(portfolio);
       const nav=document.querySelector('.sticky-nav');nav.hidden=false;
-      document.getElementById('bottomNav').innerHTML='<button class="navitem is-on" id="liveLinesNav" aria-current="page"><span>Lines</span></button><button class="navitem" id="livePortfolioNav" aria-current="false"><span>Portfolio</span></button>';
+      document.getElementById('bottomNav').innerHTML='<button class="navitem is-on" id="liveLinesNav" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 18V6a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v12H5ZM5 11h14M8 16h2m4 0h2M7 21l2-3m8 3-2-3"/></svg><span>Lines</span></button><button class="navitem" id="livePortfolioNav" aria-current="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="18" height="15" rx="3"/><path d="M3 10h18m-12-4V4h6v2m-4 9h4"/></svg><span>Portfolio</span></button>';
       document.getElementById('liveLinesNav').onclick=()=>switchTab('lines');
       document.getElementById('livePortfolioNav').onclick=()=>switchTab('portfolio');
       state.tab='lines';
@@ -67,7 +67,7 @@ window.SubwayLivePreview = {
     function logout(message='Signed out.') {
       if(state.purchaseBusy||state.purchase?.uncertain)return;
       document.getElementById('livePurchase')?.remove();document.body.classList.remove('modal-open');
-      const token=state.token;state.generation++;state.token=null;state.rows=[];state.player=null;state.error='';state.updated=null;state.busy=false;state.tickets=null;state.portfolioError='';state.portfolioBusy=false;state.tab='lines';state.portfolioTab='active';state.purchase=null;state.purchaseBusy=false;state.notice='';
+      const token=state.token;state.generation++;state.token=null;state.rows=[];state.board.clear();state.player=null;state.error='';state.updated=null;state.busy=false;state.tickets=null;state.portfolioError='';state.portfolioBusy=false;state.tab='lines';state.portfolioTab='active';state.purchase=null;state.purchaseBusy=false;state.notice='';
       document.getElementById('headerBalance').textContent='\u2014';signInView(message);
       if(token)fetch(url+'/auth/v1/logout?scope=local',{method:'POST',headers:{apikey:key,Authorization:'Bearer '+token}}).catch(()=>{});
     }
@@ -142,13 +142,13 @@ window.SubwayLivePreview = {
         if(gen!==state.generation)return;
         if(typeof id!=='string'||!id)throw Error('Unconfirmed purchase');
         state.purchaseBusy=false;p.uncertain=false;closePurchase();if(restored)showClassicTrain();
-        state.notice='Ticket punched! '+p.side+' | '+tokens(p.stake*100);document.getElementById('liveTradeNotice').textContent=state.notice;
-        state.player=null;document.getElementById('headerBalance').textContent='-';state.portfolioTab='active';switchTab('portfolio');
+        showToast('Ticket punched! '+p.side+' | '+tokens(p.stake*100));
+        state.player=null;document.getElementById('headerBalance').textContent='-';state.portfolioTab='active';state.tickets=null;switchTab('lines');refresh();
       }catch(e){
         if(gen!==state.generation)return;
-        if(e.status===400||e.status===409||e.status===422){p.uncertain=false;p.failure='Prediction rejected. Refresh and choose a fresh quote.';}
+        if(e.status===400||e.status===409||e.status===422){p.uncertain=false;p.failure='Prediction rejected. Checking the latest market status.';refresh();}
         else {p.uncertain=true;}
-      }finally{if(gen===state.generation){state.purchaseBusy=false;updatePurchase();}}
+      }finally{if(gen===state.generation){state.purchaseBusy=false;const fill=document.getElementById('swipeProgress');if(fill){fill.style.opacity='0';fill.style.height='0';}updatePurchase();}}
     }
     async function refresh(){
       if(!state.token||state.busy||document.hidden||state.tab!=='lines')return;
@@ -161,13 +161,14 @@ window.SubwayLivePreview = {
         if(state.tab!=='lines')return;
         state.player=players[0];
         state.rows=groupMarkets(rows);
+        for(const r of state.rows)state.board.set(r.market_id,r);
         state.updated=new Date(Date.now()+state.offset).toISOString();state.error='';
         document.getElementById('liveUser').textContent=state.player.username+' \u00b7 Test account required for market access';
         document.getElementById('headerBalance').textContent=(Number(state.player.available_minor)/100).toLocaleString('en-US',{maximumFractionDigits:2});
       }catch(e){
         if(gen!==state.generation)return;
         if(e.status===401||e.status===403){logout('Session expired or access unavailable. Sign in again.');return;}
-        state.rows=[];state.error='Live data unavailable. Retrying automatically.';document.getElementById('headerBalance').textContent='\u2014';
+        state.error='Live data unavailable. Retrying automatically.';document.getElementById('headerBalance').textContent='\u2014';
       }finally{if(gen===state.generation){state.busy=false;renderRows();}}
     }
     const tokens=v=>v==null||!Number.isFinite(Number(v))?'\u2014':(Number(v)/100).toLocaleString('en-US',{maximumFractionDigits:2})+' T';
@@ -241,13 +242,39 @@ window.SubwayLivePreview = {
     }
     function renderClassicRows(){
       if(!state.token||state.tab!=='lines'||!document.getElementById('liveCards'))return;
-      const rows=visibleRows();const host=document.getElementById('liveCards');
-      document.getElementById('liveStatus').textContent=state.error||(!state.updated?'Loading live markets...':rows.length?rows.length+' live test markets':'Checking for fresh tradable markets...');
-      const card=(r,featured)=>`<article class="market-card" data-market="${safe(r.market_id)}" role="button" tabindex="0" aria-label="Open ${safe(r.question)}"><div class="card-flex"><div class="card-info"><div class="card-question">${classicBullet('6','small')}<span class="card-title">${safe(r.question)}</span></div><div class="card-meta">${featured?'<span class="spot">&#9733; Featured &middot; </span>':''}Next Train<span class="meta-lock"> &middot; Locks in <span data-lock="${safe(r.market_id)}">${lockText(r)}</span></span></div></div><div class="card-side-buttons">${['YES','NO'].map(side=>`<button class="pricebtn ${side==='NO'?'no':''}" data-pick="${side}">${side} <b>${fmt(r.quotes[side].ask_ppm)}</b></button>`).join('')}</div></div></article>`;
-      const sig=rows.map(r=>r.market_id+':'+r.quotes.YES.quote_id+':'+r.quotes.NO.quote_id).join('|');
-      if(host.dataset.sig!==sig){host.dataset.sig=sig;host.innerHTML=rows.length?`<div class="section-label"><h2>Featured For You</h2><span class="dashes"></span></div><div class="cards">${card(rows[0],true)}</div>${rows.length>1?`<div class="section-label" style="margin-top:20px"><h2>More on the Board</h2><span class="dashes"></span></div><div class="cards">${rows.slice(1).map(r=>card(r,false)).join('')}</div>`:''}`:'<div class="empty">'+classicBullet('6')+'<h3>No Trains on This Track</h3><p>No fresh quotes right now. Checking automatically.</p></div>';
-        host.querySelectorAll('[data-market]').forEach(el=>{const open=side=>openPurchase(visibleRows().find(r=>r.market_id===el.dataset.market),side);el.onclick=e=>open(e.target.closest('[data-pick]')?.dataset.pick||null);el.onkeydown=e=>{if(e.target===el&&['Enter',' '].includes(e.key)){e.preventDefault();open(null);}};});}
-      host.querySelectorAll('[data-lock]').forEach(el=>{const r=rows.find(x=>x.market_id===el.dataset.lock);if(r)el.textContent=lockText(r);});updateClassic();
+      const host=document.getElementById('liveCards'),now=Date.now()+state.offset;
+      const fresh=new Map(visibleRows().map(r=>[r.market_id,r]));
+      if(!host.querySelector('#boardMore'))host.innerHTML='<div id="boardFeaturedHead" class="section-label"><h2>Featured For You</h2><span class="dashes"></span></div><div class="cards" id="boardFeatured"></div><div id="boardMoreHead" class="section-label" style="margin-top:20px"><h2>More on the Board</h2><span class="dashes"></span></div><div class="cards" id="boardMore"></div><div id="boardEmpty" class="empty">'+classicBullet('6')+'<h3>No Trains on This Track</h3><p>Checking for live markets...</p></div>';
+      const featured=host.querySelector('#boardFeatured'),more=host.querySelector('#boardMore');
+      for(const [id,r] of state.board){
+        const locked=Date.parse(r.lock_at)<=now;
+        let el=[...host.querySelectorAll('[data-market]')].find(x=>x.dataset.market===id);
+        if(locked&&!el){state.board.delete(id);continue;}
+        if(!el){
+          el=document.createElement('article');el.className='market-card';el.dataset.market=id;el.tabIndex=0;el.setAttribute('role','button');el.setAttribute('aria-label','Open '+r.question);
+          el.innerHTML=`<div class="card-flex"><div class="card-info"><div class="card-question">${classicBullet('6','small')}<span class="card-title">${safe(r.question)}</span></div><div class="card-meta">Next Train<span class="meta-lock"> &middot; <span data-lock></span></span></div></div><div class="card-side-buttons">${['YES','NO'].map(side=>`<button class="pricebtn ${side==='NO'?'no':''}" data-pick="${side}">${side} <b></b></button>`).join('')}</div></div>`;
+          (featured.children.length?more:featured).append(el);
+          if(!matchMedia('(prefers-reduced-motion: reduce)').matches)el.animate([{opacity:0,transform:'translateY(8px)'},{opacity:1,transform:'translateY(0)'}],{duration:240});
+          const open=side=>{const current=state.error?null:visibleRows().find(x=>x.market_id===id);if(current)openPurchase(current,side);};
+          el.onclick=e=>open(e.target.closest('[data-pick]')?.dataset.pick||null);el.onkeydown=e=>{if(e.target===el&&['Enter',' '].includes(e.key)){e.preventDefault();open(null);}};
+        }
+        const q=fresh.get(id),ready=!!q&&!state.error&&!locked;
+        el.querySelector('[data-lock]').textContent=locked?'Locked':ready?'Locks in '+lockText(r):'Updating odds...';
+        el.setAttribute('aria-disabled',String(!ready));el.tabIndex=ready?0:-1;
+        for(const b of el.querySelectorAll('[data-pick]')){b.disabled=!ready;b.querySelector('b').textContent=ready?fmt(q.quotes[b.dataset.pick].ask_ppm):'--';}
+        if(locked&&!el.dataset.closing){el.dataset.closing='1';setTimeout(()=>{if(!el.isConnected)return;const h=el.getBoundingClientRect().height;if(!matchMedia('(prefers-reduced-motion: reduce)').matches){const a=el.animate([{opacity:1,maxHeight:h+'px'},{opacity:0,maxHeight:'0px',paddingTop:0,paddingBottom:0,margin:0}],{duration:300,fill:'forwards'});a.onfinish=()=>{el.remove();state.board.delete(id);renderClassicRows();};}else{el.remove();state.board.delete(id);renderClassicRows();}},800);}
+      }
+      if(!featured.children.length&&more.children.length)featured.append(more.firstElementChild);
+      host.querySelector('#boardFeaturedHead').hidden=!featured.children.length;host.querySelector('#boardMoreHead').hidden=!more.children.length;host.querySelector('#boardEmpty').hidden=!!(featured.children.length+more.children.length);
+      document.getElementById('liveStatus').textContent=state.error||(!state.updated?'Loading live markets...':fresh.size?fresh.size+' live test markets':'Checking for fresh quotes...');updateClassic();
+    }
+    function showToast(message){const slot=document.getElementById('toastSlot');if(!slot)return;slot.innerHTML='<div class="toast" role="status">'+safe(message)+'</div>';clearTimeout(state.toastTimer);state.toastTimer=setTimeout(()=>slot.innerHTML='',3300);}
+    function missedTrain(){const p=state.purchase,host=document.getElementById('livePurchase');if(!p||!host||p.stage==='missed')return;p.stage='missed';host.innerHTML='<div class="backdrop"></div><section class="modal" role="dialog" aria-modal="true" aria-label="Market locked"><div class="market-line">'+classicBullet('6')+'<h3>You Missed Your Train!</h3></div><p>This market has already locked. No Tokens were deducted. Catch the next one!</p><button class="btn fill" id="backToLines">Back to Lines</button></section>';host.querySelector('#backToLines').onclick=()=>{closePurchase();switchTab('lines');};}
+    function priceOffer(p,q){const host=document.getElementById('livePurchase');p.stageBeforeOffer=p.stage==='offer'?p.stageBeforeOffer:p.stage;p.stage='offer';p.offered=q;
+      const gain=x=>cash(Math.floor(p.stake*100*1000000/x.ask_ppm+.5)-p.stake*100);
+      host.innerHTML=`<div class="backdrop"></div><section class="modal" role="dialog" aria-modal="true" aria-label="Odds have changed"><h3>Odds Have Changed</h3><p>Your ${safe(p.side)} price has changed.</p><div class="summary-grid"><div class="summary-box"><small>Previous price</small><strong>${fmt(p.quote.ask_ppm)}</strong><small>Profit ${gain(p.quote)}</small></div><div class="summary-box"><small>New price</small><strong>${fmt(q.ask_ppm)}</strong><small>Profit ${gain(q)}</small></div></div><p id="offerStatus" role="status"></p><button class="btn fill" id="acceptPrice">Accept New Price</button><button class="btn secondary fill" id="rejectPrice">Reject New Price</button></section>`;
+      host.querySelector('#rejectPrice').onclick=()=>{closePurchase();switchTab('lines');};
+      host.querySelector('#acceptPrice').onclick=()=>{const r=state.error?null:visibleRows().find(x=>x.market_id===p.market.market_id),latest=r?.quotes[p.side];if(!latest||latest.ask_ppm!==p.offered.ask_ppm){updateClassic();return;}p.quote=latest;p.market=r;p.stage=p.stageBeforeOffer;p.offered=null;p.failure='';p.key=crypto.randomUUID();renderClassicPurchase();};
     }
     function openClassic(r,side){
       if(!r||state.purchase||state.purchaseBusy)return;
@@ -262,7 +289,7 @@ window.SubwayLivePreview = {
       else host.innerHTML=`<div class="backdrop" data-live-dismiss></div><section class="sheet rh-sheet" role="dialog" aria-modal="true" aria-label="Review ticket"><button class="slip-back" id="liveEdit">&#8249; Edit</button><div class="slip-sub">SUBWAY EXCHANGE &middot; LIVE TEST TICKET</div><div class="slip-head">Review My Pick</div><div class="slip-stub"><div class="market-line" style="display:flex;align-items:center;gap:12px">${classicBullet('6')}<div><strong>Next Train</strong><div class="muted" style="font-size:12px;margin-top:4px">${safe(r.question)}</div></div></div><div class="detail-line"><span>Your pick</span><strong>${safe(p.side)} &middot; ${fmt(p.quote.ask_ppm)}</strong></div><div class="detail-line"><span>Risk</span><strong>${cash(p.stake*100)}</strong></div><div class="detail-line"><span>Return if correct</span><strong>${cash(Math.floor(p.stake*100*1000000/p.quote.ask_ppm+.5))}</strong></div><div class="slip-total"><span>Profit if correct</span><strong>+${cash(Math.floor(p.stake*100*1000000/p.quote.ask_ppm+.5)-p.stake*100)}</strong></div></div><p id="liveQuoteStatus" role="status"></p><div id="swipeZone" class="rh-swipe" role="button" tabindex="0" aria-label="Swipe up to punch ticket"><div class="swipe-glyph">&#8593;</div><div class="swipe-text">Swipe up to punch ticket</div><div class="swipe-sub">Slide from here to submit</div></div><button class="btn fill" id="liveRetry" hidden>Retry same request</button><p class="slip-footnote">Live MTA data &middot; No real money</p></section><div id="swipeProgress" class="swipe-progress" aria-hidden="true"></div>`;
       host.querySelector('[data-live-dismiss]').onclick=()=>closePurchase();
       const cancel=document.getElementById('liveCancel');if(cancel)cancel.onclick=()=>closePurchase();
-      host.querySelectorAll('[data-side]').forEach(b=>b.onclick=()=>{if(state.purchaseBusy||p.uncertain)return;p.side=b.dataset.side;p.quote=r.quotes[p.side];renderClassicPurchase();});
+      host.querySelectorAll('[data-side]').forEach(b=>b.onclick=()=>{if(state.purchaseBusy||p.uncertain)return;const latest=state.error?null:visibleRows().find(x=>x.market_id===r.market_id);if(!latest)return;p.side=b.dataset.side;p.quote=latest.quotes[p.side];p.market=latest;p.failure='';renderClassicPurchase();});
       host.querySelectorAll('[data-stake]').forEach(b=>b.onclick=()=>{p.stake=Number(b.dataset.stake);p.custom=false;renderClassicPurchase();});
       const other=document.getElementById('liveOther');if(other)other.onclick=()=>{p.custom=true;p.stake=NaN;renderClassicPurchase();document.getElementById('liveStake')?.focus();};
       const input=document.getElementById('liveStake');if(input)input.oninput=()=>{p.stake=input.value===''?NaN:Number(input.value);updateClassic();};
@@ -272,12 +299,27 @@ window.SubwayLivePreview = {
       if(p.stage==='slip')wireClassicSwipe();updateClassic();
     }
     function updateClassic(){
-      const p=state.purchase;if(!p)return;
+      const p=state.purchase;if(!p||p.stage==='missed')return;
+      if(!state.purchaseBusy&&!p.uncertain){
+        if(Date.parse(p.market.lock_at)<=Date.now()+state.offset){missedTrain();return;}
+        const r=state.error?null:visibleRows().find(x=>x.market_id===p.market.market_id),q=r?.quotes[p.side];
+        if(p.stage==='offer'){
+          if(q&&q.ask_ppm!==p.offered.ask_ppm){priceOffer(p,q);return;}
+          const b=document.getElementById('acceptPrice');if(b)b.disabled=!q;
+          const msg=document.getElementById('offerStatus');if(msg)msg.textContent=q?'':'Updating odds...';return;
+        }
+        if(q&&p.quote&&q.ask_ppm!==p.quote.ask_ppm){priceOffer(p,q);return;}
+        if(q&&p.quote&&q.quote_id!==p.quote.quote_id){p.quote=q;p.market=r;p.key=crypto.randomUUID();p.failure='';}
+        if(r&&p.stage==='detail'){
+          for(const b of document.querySelectorAll('#livePurchase [data-side]')){b.querySelector('strong').textContent=fmt(r.quotes[b.dataset.side].ask_ppm);}
+        }
+      }
       const status=document.getElementById('liveQuoteStatus');if(!status)return;
       const valid=purchaseValid(p),gross=valid?Math.floor(p.stake*100*1000000/p.quote.ask_ppm+.5):NaN;
-      status.textContent=state.purchaseBusy?'Submitting...':p.uncertain?'Result unknown. Retry the same request.':p.failure||(!p.side?'Choose YES or NO.':!Number.isInteger(p.stake)||p.stake<10||p.stake>250?'Enter 10-250 whole Tokens.':!valid?'Quote changed, expired, or balance insufficient. Close and select a fresh quote.':'Quote expires '+time(p.quote.quote_expires_at)+' ET');
+      status.textContent=state.purchaseBusy?'Submitting...':p.uncertain?'Result unknown. Retry the same request.':p.failure||(!p.side?'Choose YES or NO.':!Number.isInteger(p.stake)||p.stake<10||p.stake>250?'Enter 10-250 whole Tokens.':!valid?(p.stake*100>Number(state.player?.available_minor)?'Insufficient Tokens.':'Updating odds...'):'Quote expires '+time(p.quote.quote_expires_at)+' ET');
       for(const [id,v] of [['classicRisk',p.stake*100],['classicReturn',gross],['classicProfit',gross-p.stake*100]]){const el=document.getElementById(id);if(el)el.innerHTML=cash(v);}
       const lock=document.getElementById('classicLock');if(lock)lock.textContent=lockText(p.market);
+      for(const b of document.querySelectorAll('#livePurchase [data-side],#livePurchase [data-stake],#liveOther,#liveStake,#liveCancel'))b.disabled=state.purchaseBusy||p.uncertain;
       const review=document.getElementById('reviewPick');if(review)review.disabled=!valid||state.purchaseBusy||!!p.failure;
       const zone=document.getElementById('swipeZone');if(zone){zone.setAttribute('aria-disabled',String(!valid||state.purchaseBusy||p.uncertain||!!p.failure));zone.tabIndex=valid&&!p.uncertain&&!p.failure&&!state.purchaseBusy?0:-1;}
       const edit=document.getElementById('liveEdit');if(edit)edit.disabled=state.purchaseBusy||p.uncertain;
@@ -285,22 +327,23 @@ window.SubwayLivePreview = {
     }
     function wireClassicSwipe(){
       const z=document.getElementById('swipeZone'),fill=document.getElementById('swipeProgress');if(!z||!fill)return;
-      let y=null,id=null,progress=0,base=null;
-      const allowed=()=>z.getAttribute('aria-disabled')!=='true'&&state.purchase?.stage==='slip';
+      let y=null,id=null,progress=0,base=null,start=0,finishing=false;
+      const allowed=()=>!finishing&&z.isConnected&&z.getAttribute('aria-disabled')!=='true'&&state.purchase?.stage==='slip';
       const threshold=()=>Math.min(280,Math.max(155,window.innerHeight*.3));
       const shape=d=>{progress=Math.max(0,d);fill.style.left=base.left+'px';fill.style.width=base.width+'px';fill.style.bottom=(window.innerHeight-base.bottom)+'px';fill.style.height=(base.height+progress)+'px';fill.style.opacity='1';fill.style.borderRadius='14px';z.classList.toggle('ready',progress>=threshold());};
       const reset=()=>{fill.style.opacity='0';fill.style.height='0';z.classList.remove('ready','dragging');};
-      z.onpointerdown=e=>{if(!allowed())return;e.preventDefault();base=z.getBoundingClientRect();y=e.clientY;id=e.pointerId;shape(0);z.setPointerCapture(id);z.classList.add('dragging');};
+      const finish=()=>{if(!allowed())return;finishing=true;const p=state.purchase;fill.style.transition=matchMedia('(prefers-reduced-motion: reduce)').matches?'none':'height .28s ease,left .28s ease,width .28s ease,bottom .28s ease,border-radius .28s ease';fill.style.opacity='1';fill.style.bottom='0';fill.style.left='0';fill.style.width='100vw';fill.style.height='100dvh';fill.style.borderRadius='0';setTimeout(()=>{finishing=false;if(state.purchase===p&&allowed()&&purchaseValid(p))submitPurchase();else reset();},matchMedia('(prefers-reduced-motion: reduce)').matches?0:300);};
+      z.onpointerdown=e=>{if(!allowed())return;e.preventDefault();start=performance.now();fill.style.transition='none';base=z.getBoundingClientRect();y=e.clientY;id=e.pointerId;shape(0);z.setPointerCapture(id);z.classList.add('dragging');};
       z.onpointermove=e=>{if(y===null||id!==e.pointerId)return;e.preventDefault();shape(y-e.clientY);};
-      z.onpointerup=e=>{if(y===null||id!==e.pointerId)return;const done=progress>=threshold();y=null;id=null;reset();if(done&&allowed())submitPurchase();};
+      z.onpointerup=e=>{if(y===null||id!==e.pointerId)return;const distance=Math.max(progress,y-e.clientY),elapsed=Math.max(1,performance.now()-start),done=distance>=threshold()||(distance>=45&&distance/elapsed>.65);y=null;id=null;if(done&&allowed())finish();else reset();};
       z.onpointercancel=()=>{y=null;id=null;reset();};
-      z.onkeydown=e=>{if(['Enter',' '].includes(e.key)){e.preventDefault();if(allowed())submitPurchase();}};
+      z.onkeydown=e=>{if(['Enter',' '].includes(e.key)){e.preventDefault();if(allowed())finish();}};
     }
     function showClassicTrain(){const el=document.createElement('div');el.className='train-overlay';el.innerHTML='<div class="train-stage"><div class="train"><div class="trainwindow"></div><div class="trainwindow"></div>'+classicBullet('6')+'<div class="trainwindow"></div></div></div><div class="train-label">TICKET PUNCHED</div>';document.body.appendChild(el);setTimeout(()=>el.remove(),2700);}
 
     signInView();
     setInterval(()=>{if(state.token&&!document.hidden)renderRows();},1000);
-    setInterval(()=>{if(state.tab==='portfolio')refreshPortfolio();else refresh();},10000);
+    setInterval(()=>{if(state.tab==='portfolio')refreshPortfolio();else refresh();},5000);
     document.addEventListener('visibilitychange',()=>{if(!document.hidden){if(state.tab==='portfolio')refreshPortfolio();else{renderRows();refresh();}}});
     return true;
   }
