@@ -20,8 +20,11 @@ window.SubwayLivePreview = {
     const box=document.querySelector('.tokenbox');
     if(box){
       box.title='Backend available Tokens (rounded for display)';
-      box.innerHTML=tokenMark().replace('class="mini-token"','class="token-svg"')+'<div class="live-token-stack"><strong id="headerBalance">&mdash;</strong><button type="button" id="liveLogout" hidden>Sign out</button></div>';
-      const style=document.createElement('style');style.textContent='.live-token-stack{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;line-height:1.15}.live-token-stack #liveLogout{font:inherit;font-size:10px;line-height:1.15;color:var(--muted,#a7b6c8);text-decoration:underline;text-underline-offset:2px;background:none;border:0;padding:2px 3px;cursor:pointer}.live-token-stack #liveLogout[hidden]{display:none!important}.live-token-stack #liveLogout:focus-visible{outline:2px solid #FFCB23;outline-offset:2px}.live-signed-money{display:inline-flex;align-items:center;gap:3px;vertical-align:middle;white-space:nowrap}';document.head.appendChild(style);
+      box.innerHTML=tokenMark().replace('class="mini-token"','class="token-svg"')+'<strong id="headerBalance">&mdash;</strong>';
+      const stack=document.createElement('div');stack.className='live-token-stack';
+      box.parentNode.insertBefore(stack,box);stack.appendChild(box);
+      const signOut=document.createElement('button');signOut.type='button';signOut.id='liveLogout';signOut.hidden=true;signOut.textContent='Sign Out';stack.appendChild(signOut);
+      const style=document.createElement('style');style.textContent='.live-token-stack{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;line-height:1.15;flex-shrink:0}.live-token-stack #liveLogout{font:inherit;font-size:10px;line-height:1.15;color:var(--muted,#a7b6c8);text-decoration:underline;text-underline-offset:2px;background:none;border:0;padding:2px 3px;cursor:pointer}.live-token-stack #liveLogout[hidden]{display:none!important}.live-token-stack #liveLogout:focus-visible{outline:2px solid #FFCB23;outline-offset:2px}.live-signed-money{display:inline-flex;align-items:center;gap:3px;vertical-align:middle;white-space:nowrap}';document.head.appendChild(style);
       document.getElementById('liveLogout').onclick=()=>logout();
     }
     document.getElementById('headerBalance').textContent='\u2014';
