@@ -10,7 +10,7 @@ window.SubwayLivePreview = {
     const time = v => new Date(v).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit',second:'2-digit'});
     const bullet = '<span class="roundel small" style="--bg:#00933C;--fg:white">6</span>';
     const restored=new URLSearchParams(location.search).get('classic')!=='0';
-    const state = {token:null, rows:[], player:null, offset:0, error:'', busy:false, generation:0, updated:null,tab:'lines',portfolioTab:'active',tickets:null,portfolioError:'',portfolioBusy:false,purchase:null,purchaseBusy:false,notice:'',board:new Map(),toastTimer:null};
+    const state = {token:null, rows:[], player:null, offset:0, error:'', busy:false, generation:0, updated:null,tab:'lines',portfolioTab:'active',tickets:null,portfolioError:'',portfolioBusy:false,purchase:null,purchaseBusy:false,notice:'',board:new Map(),toastTimer:null,settlementSeen:null,expandedTickets:new Set(),evidenceTickets:new Set()};
     document.title='Subway Exchange \u00b7 Live Market Preview';
     document.querySelector('.demo-strip').textContent='PRIVATE ALPHA \u00b7 LIVE MTA DATA \u00b7 VIRTUAL TOKEN TEST TRADING';
     for (const sel of ['#alertsBtn','.sticky-nav','.foot','.side']) {
@@ -42,7 +42,7 @@ window.SubwayLivePreview = {
           const data=await request('/auth/v1/token?grant_type=password',{email:document.getElementById('liveEmail').value.trim(),password:password.value});
           if(!data.access_token)throw Error('Missing session');
           state.token=data.access_token;state.generation++;password.value='';
-          renderShell();await refresh();
+          renderShell();await Promise.all([refresh(),refreshPortfolio()]);
         }catch(err){password.value='';btn.disabled=false;const status=document.getElementById('liveLoginStatus');if(status)status.textContent='Sign-in failed. Check your test-account credentials or connection.';}
       });
     }
@@ -67,7 +67,7 @@ window.SubwayLivePreview = {
     function logout(message='Signed out.') {
       if(state.purchaseBusy||state.purchase?.uncertain)return;
       document.getElementById('livePurchase')?.remove();document.body.classList.remove('modal-open');
-      const token=state.token;state.generation++;state.token=null;state.rows=[];state.board.clear();state.player=null;state.error='';state.updated=null;state.busy=false;state.tickets=null;state.portfolioError='';state.portfolioBusy=false;state.tab='lines';state.portfolioTab='active';state.purchase=null;state.purchaseBusy=false;state.notice='';
+      const token=state.token;state.generation++;state.token=null;state.rows=[];state.board.clear();clearTimeout(state.toastTimer);const toastSlot=document.getElementById('toastSlot');if(toastSlot)toastSlot.innerHTML='';state.settlementSeen=null;state.expandedTickets.clear();state.evidenceTickets.clear();state.player=null;state.error='';state.updated=null;state.busy=false;state.tickets=null;state.portfolioError='';state.portfolioBusy=false;state.tab='lines';state.portfolioTab='active';state.purchase=null;state.purchaseBusy=false;state.notice='';
       document.getElementById('headerBalance').textContent='\u2014';signInView(message);
       if(token)fetch(url+'/auth/v1/logout?scope=local',{method:'POST',headers:{apikey:key,Authorization:'Bearer '+token}}).catch(()=>{});
     }
@@ -142,8 +142,9 @@ window.SubwayLivePreview = {
         if(gen!==state.generation)return;
         if(typeof id!=='string'||!id)throw Error('Unconfirmed purchase');
         state.purchaseBusy=false;p.uncertain=false;closePurchase();if(restored)showClassicTrain();
+        if(state.settlementSeen)state.settlementSeen.set(id,'OPEN');
         showToast('Ticket punched! '+p.side+' | '+tokens(p.stake*100));
-        state.player=null;document.getElementById('headerBalance').textContent='-';state.portfolioTab='active';state.tickets=null;switchTab('lines');refresh();
+        state.player=null;document.getElementById('headerBalance').textContent='-';state.portfolioTab='active';state.tickets=null;switchTab('lines');refresh();refreshPortfolio();
       }catch(e){
         if(gen!==state.generation)return;
         if(e.status===400||e.status===409||e.status===422){p.uncertain=false;p.failure='Prediction rejected. Checking the latest market status.';refresh();}
@@ -188,41 +189,60 @@ window.SubwayLivePreview = {
       }
       if(tab==='portfolio'){renderPortfolio();refreshPortfolio();}else{renderRows();refresh();}
     }
+    const minor=v=>v==null||!Number.isFinite(Number(v))?NaN:Number(v);
+    const signedCash=v=>Number.isFinite(minor(v))?(minor(v)>0?'+':minor(v)<0?'\u2212':'')+cash(Math.abs(minor(v))):'\u2014';
+    function ticketEvidence(t){
+      const e=t.evidence||{}, a=e.arrival_evidence||{};
+      if(!e.research_market_id)return '<p>Test settlement. No live arrival evidence is associated with this ticket.</p>';
+      const reason={WINDOW_BEFORE_DEADLINE:'The entire observed arrival window was at or before the prediction deadline.',WINDOW_AFTER_DEADLINE:'The entire observed arrival window was after the prediction deadline.',WINDOW_STRADDLES_DEADLINE:'The arrival window crossed the deadline, so the result was uncertain and the stake was refunded.',NO_STOPPED_EVIDENCE:'No qualifying stopped-train observation was available. The stake was refunded.',STOPPED_ONLY:'A stopped train was observed, but there was no qualifying preceding observation to establish arrival.',IDENTITY_CONFLICT:'The observations could not be confidently matched to the same train.',STOPPED_BEFORE_GENERATION:'The stopped observation predates market creation.'}[t.reason_code]||'The recorded evidence was evaluated using the test settlement rules.';
+      return `<p>${safe(reason)}</p><div class="rule"><strong>Outcome:</strong> ${safe(t.outcome||'Not supplied')}</div>${a.window_start&&a.window_end?`<div class="rule"><strong>Observed arrival window:</strong> ${safe(dateTime(a.window_start))} to ${safe(dateTime(a.window_end))}</div>`:''}${a.estimated_arrival_at?`<div class="rule"><strong>Estimated arrival:</strong> ${safe(new Date(a.estimated_arrival_at).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit',second:'2-digit'}))} ET (estimate, not an exact verified arrival)</div>`:''}<p class="fineprint">Source: MTA real-time observations. Conservative test rules; uncertain evidence is voided.</p>`;
+    }
     function renderPortfolio(){
       const el=document.getElementById('livePortfolio');if(!el||state.tab!=='portfolio')return;
-      const expanded=new Set([...el.querySelectorAll('details[data-ticket][open]')].map(d=>d.dataset.ticket));
-      const evidenceOpen=new Set([...el.querySelectorAll('details[data-evidence][open]')].map(d=>d.dataset.evidence));
-      const all=state.tickets||[], history=all.filter(completed), active=all.filter(t=>!completed(t));
-      const net=history.every(t=>t.net_minor!=null&&Number.isFinite(Number(t.net_minor)))?history.reduce((n,t)=>n+Number(t.net_minor),0):null;
-      const risk=active.reduce((n,t)=>n+Number(t.stake_minor),0);
-      const ready=state.tickets!==null&&!state.portfolioError;
+      const all=state.tickets||[], history=all.filter(completed).sort((a,b)=>Date.parse(b.closed_at)-Date.parse(a.closed_at)), active=all.filter(t=>!completed(t));
+      const ready=state.tickets!==null, risk=active.reduce((n,t)=>n+minor(t.stake_minor),0), balance=minor(state.player?.available_minor);
       const selected=state.portfolioTab==='active'?active:history;
-      const detail=(label,value,cls='')=>'<div class="detail-line"><span>'+safe(label)+'</span><strong class="'+cls+'">'+safe(value)+'</strong></div>';
-      el.innerHTML='<div class="notice">Backend tickets \u00b7 Test predictions are labeled. Live MTA predictions use provisional settlement rules.</div><div class="summary-grid" style="margin-top:14px"><div class="summary-box"><small>Available Tokens</small><strong>'+safe(tokens(state.player?.available_minor))+'</strong></div><div class="summary-box"><small>Open stake</small><strong>'+safe(ready?tokens(risk):'\u2014')+'</strong></div><div class="summary-box"><small>Realized P/L</small><strong class="'+(ready?tone(net):'')+'">'+safe(ready?signed(net):'\u2014')+'</strong></div></div><div class="chiprow" style="margin:18px 0 12px" role="group" aria-label="Portfolio filter"><button id="liveActive" class="chip '+(state.portfolioTab==='active'?'is-on':'')+'" aria-pressed="'+(state.portfolioTab==='active')+'">Active'+(ready?' ('+active.length+')':'')+'</button><button id="liveHistory" class="chip '+(state.portfolioTab==='history'?'is-on':'')+'" aria-pressed="'+(state.portfolioTab==='history')+'">History'+(ready?' ('+history.length+')':'')+'</button><button id="livePortfolioRefresh" class="tiny-action" '+(state.portfolioBusy?'disabled':'')+'>Refresh</button></div>'+
-      (state.portfolioError?'<div class="empty" role="status">Portfolio unavailable. Try refreshing.</div>':!ready?'<div class="empty" role="status">Loading tickets\u2026</div>':!selected.length?'<div class="empty">'+(state.portfolioTab==='active'?'No active predictions yet.':'No completed predictions yet.')+'</div>':selected.map(t=>{
-        const done=completed(t), id=safe(t.ticket_id), test=t.environment==='test';
+      const detail=(label,value,cls='')=>`<div class="detail-line"><span>${safe(label)}</span><strong class="${cls}">${value}</strong></div>`;
+      const card=t=>{
+        const done=completed(t), id=safe(t.ticket_id), expanded=state.expandedTickets.has(t.ticket_id), ev=state.evidenceTickets.has(t.ticket_id);
+        const status=done?t.status:['LOCKED','VERIFYING'].includes(t.market_status)?t.market_status:'AWAITING';
         const badge=t.status==='WON'?'win':t.status==='LOST'?'loss':done?'void':'pending';
-        const pnl=done?'<strong class="'+tone(t.net_minor)+'">'+safe(signed(t.net_minor))+'</strong>':'';
-        const status=done?t.status:(['LOCKED','VERIFYING'].includes(t.market_status)?t.market_status:t.status);
-        return '<details class="ticket" data-ticket="'+id+'" '+(expanded.has(t.ticket_id)?'open':'')+'><summary class="ticket-top" style="cursor:pointer;list-style:none"><div class="txt"><h3>'+safe(t.market_question||t.market_name||'Prediction')+'</h3><p>'+safe([t.station_name,t.route_id?'Line '+t.route_id:null,test?'TEST PREDICTION':null,t.side].filter(Boolean).join(' \u00b7 '))+'</p></div><div class="right"><span class="badge '+badge+'">'+safe(status)+(t.status==='WON'?' <span style="color:var(--gold)">\u2605</span>':'')+'</span>'+pnl+'</div><span aria-hidden="true">\u2304</span></summary><div class="ticket-detail">'+detail('Pick',t.side+' \u00b7 '+fmt(t.ask_ppm))+detail('Risked',tokens(t.stake_minor))+detail(done?'Returned':'Potential return',tokens(done?t.returned_minor:t.gross_win_minor))+detail(done?'Net':'Potential profit',done?signed(t.net_minor):signed(Number(t.gross_win_minor)-Number(t.stake_minor)),done?tone(t.net_minor):'')+detail('Accepted',dateTime(t.accepted_at))+(done?detail('Closed',dateTime(t.closed_at))+'<details class="history-explain" data-evidence="'+id+'" '+(evidenceOpen.has(t.ticket_id)?'open':'')+'><summary>How Was This Decided?</summary>'+(test?(t.evidence?.research_market_id?'<p>Live MTA observations, provisional arrival evidence.</p>':'<p>Synthetic test settlement.</p>'):'')+detail('Outcome',t.outcome||'Not supplied')+detail('Reason',t.reason_code||'Not supplied')+(t.evidence&&Object.keys(t.evidence).length?'<pre style="white-space:pre-wrap;overflow-wrap:anywhere">'+safe(JSON.stringify(t.evidence,null,2))+'</pre>':'<p>No additional evidence recorded.</p>')+'</details>':'')+'</div></details>';
-      }).join(''));
+        const question=safe(t.market_question||t.market_name||'Your prediction');
+        const r=state.board.get(t.market_id), countdown=!done&&r&&status==='AWAITING'&&Date.parse(r.lock_at)>Date.now()?` \u00b7 Locks in ${lockText(r)}`:'';
+        return `<div class="ticket" data-ticket="${id}"><div class="ticket-top">${classicBullet(t.route_id||'S','small')}<div class="txt"><h3>${question} \u00b7 <span class="pick-side">${safe(t.side)}</span></h3><p>${safe(t.station_name||'Test market')} \u00b7 Risked ${cash(minor(t.stake_minor))}${countdown}</p></div><div class="right"><span class="badge ${badge}">${safe(status)}${t.status==='WON'?' <span style="color:#FFCB23">\u2605</span>':''}</span>${done?`<strong class="${tone(t.net_minor)}" style="margin-top:6px">${signedCash(t.net_minor)}</strong>`:''}</div></div><button class="ticket-expand" data-expand-ticket="${id}" aria-expanded="${expanded}">${expanded?'\u25be':'\u25b8'} Ticket Details</button>${expanded?`<div class="ticket-detail"><p>${question}</p>${detail('Your pick',safe(t.side)+' \u00b7 '+safe(fmt(t.ask_ppm)))}${detail('Risked',cash(minor(t.stake_minor)))}${detail(done?'Returned':'Potential return',cash(minor(done?t.returned_minor:t.gross_win_minor)))}${detail(done?'Net':'Potential profit',signedCash(done?t.net_minor:minor(t.gross_win_minor)-minor(t.stake_minor)),done?tone(t.net_minor):'')}${detail('Accepted',safe(dateTime(t.accepted_at)))}${done?detail('Closed',safe(dateTime(t.closed_at)))+`<details class="history-explain" data-evidence="${id}" ${ev?'open':''}><summary>How Was This Decided?</summary>${ticketEvidence(t)}</details>`:`<div class="notice">${status==='VERIFYING'?'Checking MTA arrival evidence.':status==='LOCKED'?'Market locked. Waiting for the result.':'Awaiting event lock.'} Results settle automatically when evidence is evaluated. Cash-out is not yet available.</div>`}</div>`:''}</div>`;
+      };
+      const markup=`<div class="summary-grid"><div class="summary-box"><small>Portfolio Value*</small><strong>${ready?cash(balance+risk):'\u2014'}</strong></div><div class="summary-box"><small>Available</small><strong>${cash(balance)}</strong></div><div class="summary-box"><small>At Risk</small><strong>${ready?cash(risk):'\u2014'}</strong></div></div><p class="intro-note">*Unresolved tickets are valued at their original stake, not a cash-out quote.</p><div class="segment" style="margin-top:18px"><button id="liveActive" class="${state.portfolioTab==='active'?'is-on':''}" aria-pressed="${state.portfolioTab==='active'}">Open &amp; Waiting${ready?' ('+active.length+')':''}</button><button id="liveHistory" class="${state.portfolioTab==='history'?'is-on':''}" aria-pressed="${state.portfolioTab==='history'}">History${ready?' ('+history.length+')':''}</button></div>${state.portfolioError?'<p role="status" class="notice">Portfolio refresh unavailable. Displayed values may be stale.</p>':''}${!ready?'<div class="empty" role="status">Loading tickets\u2026</div>':selected.length?selected.map(card).join(''):`<div class="empty"><h3>No Tickets on the Tracks</h3><p>${state.portfolioTab==='active'?'Your next prediction is waiting in Lines.':'Settled and voided tickets will show up here.'}</p><button class="btn" id="exploreMarkets">Explore Markets \u2192</button></div>`}<p class="fineprint">Private test account \u00b7 Virtual Tokens only</p>`;
+      if(el.dataset.rendered===markup)return;
+      const focused=document.activeElement?.closest('[data-expand-ticket]');const focusedId=focused?.dataset.expandTicket;
+      el.dataset.rendered=markup;el.innerHTML=markup;
       document.getElementById('liveActive').onclick=()=>{state.portfolioTab='active';renderPortfolio();};
       document.getElementById('liveHistory').onclick=()=>{state.portfolioTab='history';renderPortfolio();};
-      document.getElementById('livePortfolioRefresh').onclick=()=>refreshPortfolio();
+      el.querySelector('#exploreMarkets')?.addEventListener('click',()=>switchTab('lines'));
+      el.querySelectorAll('[data-expand-ticket]').forEach(btn=>btn.onclick=()=>{const id=btn.dataset.expandTicket;if(state.expandedTickets.has(id))state.expandedTickets.delete(id);else state.expandedTickets.add(id);renderPortfolio();});
+      if(focusedId){[...el.querySelectorAll('[data-expand-ticket]')].find(b=>b.dataset.expandTicket===focusedId)?.focus({preventScroll:true});}
+      el.querySelectorAll('[data-evidence]').forEach(d=>d.addEventListener('toggle',()=>{if(!d.isConnected)return;if(d.open)state.evidenceTickets.add(d.dataset.evidence);else state.evidenceTickets.delete(d.dataset.evidence);}));
+    }
+    function observeSettlements(tickets){
+      const previous=state.settlementSeen;state.settlementSeen=new Map(tickets.map(t=>[t.ticket_id,t.status]));
+      if(!previous)return;
+      const settled=tickets.filter(t=>completed(t)&&previous.has(t.ticket_id)&&!['WON','LOST','VOIDED','CASHED_OUT'].includes(previous.get(t.ticket_id)));
+      if(!settled.length)return;
+      if(settled.length>1){showToast(`${settled.length} tickets settled \u00b7 ${settled.filter(t=>t.status==='WON').length} won, ${settled.filter(t=>t.status==='LOST').length} lost, ${settled.filter(t=>t.status==='VOIDED').length} refunded`);return;}
+      const t=settled[0];showToast(t.status==='WON'?'Your ticket won! '+signed(t.net_minor):t.status==='VOIDED'?'Ticket voided \u00b7 '+tokens(t.returned_minor)+' refunded':t.status==='LOST'?'Ticket settled \u00b7 '+signed(t.net_minor):'Ticket settled');
     }
     async function refreshPortfolio(){
-      if(!state.token||state.portfolioBusy||document.hidden||state.tab!=='portfolio')return;
-      const gen=state.generation;state.portfolioBusy=true;
+      if(!state.token||state.portfolioBusy||document.hidden)return;
+      const gen=state.generation, startedTab=state.tab;state.portfolioBusy=true;
       try{
-        const [tickets,players]=await Promise.all([rpc('get_my_portfolio',state.token),rpc('get_my_player',state.token)]);
+        const [tickets,players]=await Promise.all([rpc('get_my_portfolio',state.token),startedTab==='portfolio'?rpc('get_my_player',state.token):Promise.resolve(null)]);
         if(gen!==state.generation)return;
-        if(!Array.isArray(tickets)||!Array.isArray(players)||players.length!==1)throw Error('Unexpected portfolio response');
-        state.tickets=tickets;state.player=players[0];state.portfolioError='';
-        document.getElementById('headerBalance').textContent=(Number(state.player.available_minor)/100).toLocaleString('en-US',{maximumFractionDigits:2});
+        if(!Array.isArray(tickets)||(players&&(!Array.isArray(players)||players.length!==1)))throw Error('Unexpected portfolio response');
+        observeSettlements(tickets);state.tickets=tickets;state.portfolioError='';
+        if(players&&state.tab==='portfolio'){state.player=players[0];document.getElementById('headerBalance').textContent=(Number(state.player.available_minor)/100).toLocaleString('en-US',{maximumFractionDigits:2});}
       }catch(e){
         if(gen!==state.generation)return;
         if(e.status===401||e.status===403){logout('Session expired or access unavailable. Sign in again.');return;}
-        state.tickets=null;state.portfolioError='Unavailable';
+        state.portfolioError='Unavailable';
       }finally{if(gen===state.generation){state.portfolioBusy=false;renderPortfolio();}}
     }
 
@@ -342,9 +362,9 @@ window.SubwayLivePreview = {
     function showClassicTrain(){const el=document.createElement('div');el.className='train-overlay';el.innerHTML='<div class="train-stage"><div class="train"><div class="trainwindow"></div><div class="trainwindow"></div>'+classicBullet('6')+'<div class="trainwindow"></div></div></div><div class="train-label">TICKET PUNCHED</div>';document.body.appendChild(el);setTimeout(()=>el.remove(),2700);}
 
     signInView();
-    setInterval(()=>{if(state.token&&!document.hidden)renderRows();},1000);
-    setInterval(()=>{if(state.tab==='portfolio')refreshPortfolio();else refresh();},5000);
-    document.addEventListener('visibilitychange',()=>{if(!document.hidden){if(state.tab==='portfolio')refreshPortfolio();else{renderRows();refresh();}}});
+    setInterval(()=>{if(state.token&&!document.hidden){if(state.tab==='portfolio')renderPortfolio();else renderRows();}},1000);
+    setInterval(()=>{if(state.tab==='lines')refresh();refreshPortfolio();},5000);
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden){if(state.tab==='portfolio')refreshPortfolio();else{renderRows();refresh();refreshPortfolio();}}});
     return true;
   }
 };
