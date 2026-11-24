@@ -221,3 +221,5 @@ window.SubwayLivePreview = {
     setInterval(()=>{if(state.tab==='portfolio')refreshPortfolio();else refresh();},10000);
     document.addEventListener('visibilitychange',()=>{if(!document.hidden){if(state.tab==='portfolio')refreshPortfolio();else{renderRows();refresh();}}});
     return true;
+      }
+};
