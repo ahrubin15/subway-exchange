@@ -10,7 +10,7 @@ window.SubwayLivePreview = {
     const time = v => new Date(v).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit',second:'2-digit'});
     const bullet = '<span class="roundel small" style="--bg:#00933C;--fg:white">6</span>';
     const restored=new URLSearchParams(location.search).get('classic')!=='0';
-    const state = {token:null, rows:[], player:null, offset:0, error:'', busy:false, generation:0, updated:null,tab:'lines',portfolioTab:'active',tickets:null,portfolioError:'',portfolioBusy:false,purchase:null,purchaseBusy:false,notice:'',board:new Map(),toastTimer:null,settlementSeen:null,expandedTickets:new Set(),evidenceTickets:new Set()};
+    const state = {token:null, rows:[], player:null, offset:0, error:'', busy:false, generation:0, updated:null,tab:'lines',portfolioTab:'active',tickets:null,portfolioError:'',portfolioBusy:false,purchase:null,purchaseBusy:false,notice:'',board:new Map(),toastTimer:null,settlementSeen:null,expandedTickets:new Set(),evidenceTickets:new Set(),rewards:null,meBusy:false,meError:"",meDraft:null,accountEmail:"",rewardBusy:false};
     document.title='Subway Exchange \u00b7 Live Market Preview';
     document.querySelector('.demo-strip').textContent='PRIVATE ALPHA \u00b7 LIVE MTA DATA \u00b7 VIRTUAL TOKEN TEST TRADING';
     for (const sel of ['#alertsBtn','.sticky-nav','.foot','.side']) {
@@ -51,8 +51,8 @@ window.SubwayLivePreview = {
         try {
           const data=await request('/auth/v1/token?grant_type=password',{email:document.getElementById('liveEmail').value.trim(),password:password.value});
           if(!data.access_token)throw Error('Missing session');
-          state.token=data.access_token;state.generation++;password.value='';
-          renderShell();await Promise.all([refresh(),refreshPortfolio()]);
+          state.token=data.access_token;state.generation++;password.value='';state.accountEmail=typeof data.user?.email==='string'?data.user.email:'';
+          renderShell();await collectRewards();await Promise.all([refresh(),refreshPortfolio()]);
         }catch(err){password.value='';btn.disabled=false;const status=document.getElementById('liveLoginStatus');if(status)status.textContent='Sign-in failed. Check your test-account credentials or connection.';}
       });
     }
@@ -69,6 +69,8 @@ window.SubwayLivePreview = {
       document.getElementById('bottomNav').innerHTML='<button class="navitem is-on" id="liveLinesNav" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 18V6a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v12H5ZM5 11h14M8 16h2m4 0h2M7 21l2-3m8 3-2-3"/></svg><span>Lines</span></button><button class="navitem" id="livePortfolioNav" aria-current="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="18" height="15" rx="3"/><path d="M3 10h18m-12-4V4h6v2m-4 9h4"/></svg><span>Portfolio</span></button>';
       document.getElementById('liveLinesNav').onclick=()=>switchTab('lines');
       document.getElementById('livePortfolioNav').onclick=()=>switchTab('portfolio');
+      const me=document.createElement('section');me.id='liveMe';me.hidden=true;main.appendChild(me);
+      const meNav=document.createElement('button');meNav.className='navitem';meNav.id='liveMeNav';meNav.setAttribute('aria-current','false');meNav.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span>Me</span>';meNav.onclick=()=>switchTab('me');document.getElementById('bottomNav').append(meNav);
       state.tab='lines';
       const panel=document.createElement('div');panel.id='livePurchase';panel.hidden=true;(restored?document.getElementById('overlays'):main).appendChild(panel);
       if(restored)restoreLines();
@@ -77,7 +79,7 @@ window.SubwayLivePreview = {
     function logout(message='Signed out.') {
       if(state.purchaseBusy||state.purchase?.uncertain)return;
       document.getElementById('livePurchase')?.remove();document.body.classList.remove('modal-open');
-      const token=state.token;state.generation++;state.token=null;state.rows=[];state.board.clear();clearTimeout(state.toastTimer);const toastSlot=document.getElementById('toastSlot');if(toastSlot)toastSlot.innerHTML='';state.settlementSeen=null;state.expandedTickets.clear();state.evidenceTickets.clear();state.player=null;state.error='';state.updated=null;state.busy=false;state.tickets=null;state.portfolioError='';state.portfolioBusy=false;state.tab='lines';state.portfolioTab='active';state.purchase=null;state.purchaseBusy=false;state.notice='';
+      const token=state.token;state.generation++;state.token=null;state.rows=[];state.board.clear();clearTimeout(state.toastTimer);const toastSlot=document.getElementById('toastSlot');if(toastSlot)toastSlot.innerHTML='';state.settlementSeen=null;state.expandedTickets.clear();state.evidenceTickets.clear();state.player=null;state.error='';state.updated=null;state.busy=false;state.tickets=null;state.portfolioError='';state.portfolioBusy=false;state.tab='lines';state.portfolioTab='active';state.purchase=null;state.purchaseBusy=false;state.notice='';state.rewards=null;state.meBusy=false;state.meError='';state.meDraft=null;state.accountEmail='';state.rewardBusy=false;document.getElementById('weeklyCelebrate')?.remove();
       document.getElementById('headerBalance').textContent='\u2014';signInView(message);
       if(token)fetch(url+'/auth/v1/logout?scope=local',{method:'POST',headers:{apikey:key,Authorization:'Bearer '+token}}).catch(()=>{});
     }
@@ -162,7 +164,7 @@ window.SubwayLivePreview = {
       }finally{if(gen===state.generation){state.purchaseBusy=false;const fill=document.getElementById('swipeProgress');if(fill){fill.style.opacity='0';fill.style.height='0';}updatePurchase();}}
     }
     async function refresh(){
-      if(!state.token||state.busy||document.hidden||state.tab!=='lines')return;
+      if(!state.token||state.busy||state.rewardBusy||document.hidden||state.tab!=='lines')return;
       const gen=state.generation,token=state.token;state.busy=true;
       
       try{
@@ -188,16 +190,16 @@ window.SubwayLivePreview = {
     const dateTime=v=>v?new Date(v).toLocaleString('en-US',{timeZone:'America/New_York',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+' ET':'\u2014';
     const completed=t=>['WON','LOST','VOIDED','CASHED_OUT'].includes(t.status);
     function switchTab(tab){
-      if(tab==='portfolio'&&state.purchase){if(state.purchaseBusy||state.purchase.uncertain)return;closePurchase();}
+      if(tab!=='lines'&&state.purchase){if(state.purchaseBusy||state.purchase.uncertain)return;closePurchase();}
       state.tab=tab;
-      main.querySelector('.pagehead h1').textContent=tab==='lines'?'Lines':'Portfolio';
+      main.querySelector('.pagehead h1').textContent=tab==='lines'?'Lines':tab==='me'?'Me':'Portfolio';
       main.querySelectorAll('[data-live-lines]').forEach(el=>el.hidden=tab!=='lines');
       main.querySelector('.ticker').hidden=tab!=='lines';
-      document.getElementById('livePortfolio').hidden=tab!=='portfolio';
-      for(const [id,name] of [['liveLinesNav','lines'],['livePortfolioNav','portfolio']]){
+      document.getElementById('livePortfolio').hidden=tab!=='portfolio';document.getElementById('liveMe').hidden=tab!=='me';
+      for(const [id,name] of [['liveLinesNav','lines'],['livePortfolioNav','portfolio'],['liveMeNav','me']]){
         const el=document.getElementById(id);el.classList.toggle('is-on',tab===name);el.setAttribute('aria-current',tab===name?'page':'false');
       }
-      if(tab==='portfolio'){renderPortfolio();refreshPortfolio();}else{renderRows();refresh();}
+      if(tab==='portfolio'){renderPortfolio();refreshPortfolio();}else if(tab==='me'){renderMe();refreshMe();refreshPortfolio();}else{renderRows();refresh();}
     }
     const minor=v=>v==null||!Number.isFinite(Number(v))?NaN:Number(v);
     const signedCash=v=>Number.isFinite(minor(v))?`<span class="live-signed-money">${minor(v)!==0?'<span>'+(minor(v)>0?'+':'\u2212')+'</span>':''}${cash(Math.abs(minor(v)))}</span>`:'\u2014';
@@ -241,19 +243,19 @@ window.SubwayLivePreview = {
       const t=settled[0];showToast(t.status==='WON'?'Your ticket won! '+signed(t.net_minor):t.status==='VOIDED'?'Ticket voided \u00b7 '+tokens(t.returned_minor)+' refunded':t.status==='LOST'?'Ticket settled \u00b7 '+signed(t.net_minor):'Ticket settled');
     }
     async function refreshPortfolio(){
-      if(!state.token||state.portfolioBusy||document.hidden)return;
+      if(!state.token||state.portfolioBusy||state.rewardBusy||document.hidden)return;
       const gen=state.generation, startedTab=state.tab;state.portfolioBusy=true;
       try{
-        const [tickets,players]=await Promise.all([rpc('get_my_portfolio',state.token),startedTab==='portfolio'?rpc('get_my_player',state.token):Promise.resolve(null)]);
+        const [tickets,players]=await Promise.all([rpc('get_my_portfolio',state.token),startedTab!=='lines'?rpc('get_my_player',state.token):Promise.resolve(null)]);
         if(gen!==state.generation)return;
         if(!Array.isArray(tickets)||(players&&(!Array.isArray(players)||players.length!==1)))throw Error('Unexpected portfolio response');
         observeSettlements(tickets);state.tickets=tickets;state.portfolioError='';
-        if(players&&state.tab==='portfolio'){state.player=players[0];document.getElementById('headerBalance').textContent=(Number(state.player.available_minor)/100).toLocaleString('en-US',{maximumFractionDigits:0});}
+        if(players&&state.tab===startedTab){state.player=players[0];document.getElementById('headerBalance').textContent=(Number(state.player.available_minor)/100).toLocaleString('en-US',{maximumFractionDigits:0});}
       }catch(e){
         if(gen!==state.generation)return;
         if(e.status===401||e.status===403){logout('Session expired or access unavailable. Sign in again.');return;}
         state.portfolioError='Unavailable';
-      }finally{if(gen===state.generation){state.portfolioBusy=false;renderPortfolio();}}
+      }finally{if(gen===state.generation){state.portfolioBusy=false;renderPortfolio();renderMe();}}
     }
 
     const routeColors={ALL:'#3e526a','1':'#EE352E','2':'#EE352E','3':'#EE352E','4':'#00933C','5':'#00933C','6':'#00933C','7':'#B933AD',A:'#0039A6',C:'#0039A6',E:'#0039A6',B:'#FF6319',D:'#FF6319',F:'#FF6319',M:'#FF6319',G:'#6CBE45',J:'#996633',Z:'#996633',L:'#A7A9AC',N:'#FCCC0A',Q:'#FCCC0A',R:'#FCCC0A',W:'#FCCC0A',S:'#808183'};
@@ -373,10 +375,64 @@ window.SubwayLivePreview = {
     }
     function showClassicTrain(){const el=document.createElement('div');el.className='train-overlay';el.innerHTML='<div class="train-stage"><div class="train"><div class="trainwindow"></div><div class="trainwindow"></div>'+classicBullet('6')+'<div class="trainwindow"></div></div></div><div class="train-label">TICKET PUNCHED</div>';document.body.appendChild(el);setTimeout(()=>el.remove(),2700);}
 
+
+    // The backend is the sole authority for grants, username and balances.
+    async function collectRewards(){
+      if(!state.token||state.rewardBusy)return;
+      const gen=state.generation,token=state.token;state.rewardBusy=true;
+      let daily=false,weekly=false;
+      try{
+        const grants=await rpc('get_my_reward_status',token);
+        if(gen!==state.generation)return;
+        if(!Array.isArray(grants)||grants.length!==2)throw Error('Reward status unavailable');
+        for(const kind of ['DAILY_GRANT','WEEKLY_GRANT']){
+          if(gen!==state.generation)return;
+          if(!grants.some(g=>g.reward_kind===kind&&g.available===true))continue;
+          const awarded=await rpc('claim_my_reward',token,{p_kind:kind});
+          if(gen!==state.generation)return;
+          if(awarded===true){if(kind==='DAILY_GRANT')daily=true;else weekly=true;}
+          else if(awarded!==false)throw Error('Unconfirmed grant');
+        }
+        state.meError='';
+      }catch(e){if(gen===state.generation)state.meError='Reward check unavailable. You can retry safely from Me.';}
+      finally{if(gen===state.generation){state.rewardBusy=false;if(weekly){const el=document.createElement('div');el.className='weekly-celebrate';el.id='weeklyCelebrate';el.innerHTML='<button class="celebrate-close" aria-label="Dismiss celebration">&times;</button><div class="nyc-coin"><span class="small-n">N</span><b>Y</b><span class="small-c">C</span></div><h2>Sunday payday!</h2><p>+1,000 Tokens</p><small>All aboard for another week.</small>';document.body.appendChild(el);el.onclick=()=>el.remove();setTimeout(()=>el.remove(),2800);if(daily)showToast('Daily Tokens collected: +50');}else if(daily)showToast('Daily Tokens collected: +50');renderMe();}}
+    }
+    async function refreshMe(){
+      if(!state.token||state.meBusy||state.rewardBusy||state.tab!=='me')return;
+      const gen=state.generation;state.meBusy=true;
+      try{const [player,rewards]=await Promise.all([rpc('get_my_player',state.token),rpc('get_my_reward_status',state.token)]);if(gen!==state.generation)return;if(!Array.isArray(player)||player.length!==1||!Array.isArray(rewards))throw Error('Account unavailable');state.player=player[0];state.rewards=rewards;state.meError='';document.getElementById('headerBalance').textContent=(Number(state.player.available_minor)/100).toLocaleString('en-US',{maximumFractionDigits:0});}
+      catch(e){if(gen===state.generation)state.meError='Account refresh unavailable. Try again.';}
+      finally{if(gen===state.generation){state.meBusy=false;renderMe();}}
+    }
+    function weekStartNY(){
+      const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const val=k=>Number(parts.find(p=>p.type===k).value);const d=new Date(Date.UTC(val('year'),val('month')-1,val('day')));d.setUTCDate(d.getUTCDate()-d.getUTCDay());return d.toISOString().slice(0,10);
+    }
+    const nyDay=v=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(v));
+    function renderMe(){
+      const el=document.getElementById('liveMe');if(!el||state.tab!=='me')return;
+      const player=state.player,all=state.tickets||[],ready=state.tickets!==null&&!state.portfolioError;
+      const risk=all.filter(t=>!completed(t)).reduce((n,t)=>n+minor(t.stake_minor),0);
+      const week=weekStartNY(),net=all.filter(t=>completed(t)&&t.closed_at&&nyDay(t.closed_at)>=week).reduce((n,t)=>n+minor(t.net_minor),0);
+      const decisive=all.filter(t=>['WON','LOST'].includes(t.status));const win=decisive.length?Math.round(decisive.filter(t=>t.status==='WON').length/decisive.length*100):0;
+      const draft=state.meDraft??player?.username??'';
+      const focused=document.activeElement?.id==='myName',cursor=focused?document.activeElement.selectionStart:null;
+      const markup=`<div class="profile-hero">${classicBullet('6','large')}<div><h2>${safe(player?.username||'Your profile')}</h2><p>Private test account</p><small class="muted">${safe(state.accountEmail||'Signed-in account')}</small></div></div><div class="summary-grid"><div class="summary-box"><small>Portfolio</small><strong>${ready?cash(minor(player?.available_minor)+risk):'&mdash;'}</strong></div><div class="summary-box"><small>Weekly P/L</small><strong class="${tone(net)}">${ready?signedCash(net):'&mdash;'}</strong></div><div class="summary-box"><small>Win Rate</small><strong>${ready?win+'%':'&mdash;'}</strong></div></div><p class="intro-note">Test prediction statistics. Voids excluded from win rate.</p><section class="shell-section"><div class="section-label"><h2>My Profile</h2><span class="dashes"></span></div><label class="form-label" for="myName">Username</label><div class="inputrow"><input class="field" id="myName" maxlength="40" autocomplete="off" value="${safe(draft)}" ${state.meBusy?'disabled':''}><button class="btn small" id="saveName" ${state.meBusy||!player||draft===player.username||!/^[A-Za-z0-9_]{3,40}$/.test(draft)||/^guest_/i.test(draft)?'disabled':''}>Save</button></div><p class="fineprint">3&ndash;40 letters, numbers or underscores.</p></section><section class="shell-section"><div class="section-label"><h2>My Rewards</h2><span class="dashes"></span></div>${['DAILY_GRANT','WEEKLY_GRANT'].map(kind=>{const g=state.rewards?.find(x=>x.reward_kind===kind);return `<div class="detail-line"><span>${kind==='DAILY_GRANT'?'Daily reward':'Weekly reward'}<small class="muted" style="display:block">${g?g.available?'Available':'Next reset: '+safe(dateTime(g.next_reset_at)):'Checking eligibility...'}</small></span><strong>${cash(kind==='DAILY_GRANT'?5000:100000)} ${g&&!g.available?'&#10003;':''}</strong></div>`}).join('')}<button class="btn secondary fill" id="liveClaim" ${state.rewardBusy||state.meBusy?'disabled':''}>${state.rewardBusy?'Checking rewards...':'Check Rewards'}</button><p class="fineprint">Rewards collect automatically on sign-in. Reset times follow New York time.</p></section><section class="shell-section"><div class="section-label"><h2>Station Services</h2><span class="dashes"></span></div><p class="intro-note">Your account is saved on the server. Avatar, borough, Line Wars team and referrals will be connected in later updates.</p><button class="btn secondary fill" id="liveMeRefresh" ${state.meBusy?'disabled':''}>Refresh Account</button></section>${state.meError?`<p class="notice" role="status">${safe(state.meError)}</p>`:''}`;
+      if(el.dataset.rendered===markup)return;el.dataset.rendered=markup;el.innerHTML=markup;
+      const input=el.querySelector('#myName'),save=el.querySelector('#saveName');input.oninput=()=>{state.meDraft=input.value;save.disabled=state.meBusy||!player||input.value===player.username||!/^[A-Za-z0-9_]{3,40}$/.test(input.value)||/^guest_/i.test(input.value);};save.onclick=()=>saveUsername();if(focused&&!input.disabled){input.focus({preventScroll:true});if(cursor!==null)input.setSelectionRange(cursor,cursor);}
+      el.querySelector('#liveMeRefresh').onclick=()=>{refreshMe();refreshPortfolio();};el.querySelector('#liveClaim').onclick=async()=>{await collectRewards();if(state.token){await refreshMe();refreshPortfolio();}};
+    }
+    async function saveUsername(){
+      const value=state.meDraft?.trim();if(!value||!/^[A-Za-z0-9_]{3,40}$/.test(value)||/^guest_/i.test(value)||state.meBusy||!state.token)return;
+      const gen=state.generation;state.meBusy=true;renderMe();
+      try{await rpc('update_my_username',state.token,{p_username:value});if(gen!==state.generation)return;state.meDraft=null;state.meError='';showToast('Username saved');}
+      catch(e){if(gen===state.generation)state.meError='Unable to save username. It may be unavailable. Try another name.';}
+      finally{if(gen===state.generation){state.meBusy=false;if(!state.meError)await refreshMe();else renderMe();}}
+    }
+
     signInView();
-    setInterval(()=>{if(state.token&&!document.hidden){if(state.tab==='portfolio')renderPortfolio();else renderRows();}},1000);
+    setInterval(()=>{if(state.token&&!document.hidden){if(state.tab==='portfolio')renderPortfolio();else if(state.tab==='lines')renderRows();}},1000);
     setInterval(()=>{if(state.tab==='lines')refresh();refreshPortfolio();},5000);
-    document.addEventListener('visibilitychange',()=>{if(!document.hidden){if(state.tab==='portfolio')refreshPortfolio();else{renderRows();refresh();refreshPortfolio();}}});
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden){if(state.tab==='portfolio')refreshPortfolio();else if(state.tab==='me'){refreshMe();refreshPortfolio();}else{renderRows();refresh();refreshPortfolio();}}});
     return true;
   }
 };
