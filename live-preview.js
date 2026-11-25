@@ -67,11 +67,48 @@ window.SubwayLivePreview = {
         return result.data;
       }finally{clearTimeout(timer);}
     }
+    function authErrorMessage(err,register=false){
+      const code=String(err?.code||'');
+      if(code==='email_not_confirmed')return 'Your email is not verified yet. Open the confirmation email or request a new link below.';
+      if(code==='invalid_credentials')return 'Incorrect email or password. Check your details and try again.';
+      if(code==='over_email_send_rate_limit'||code==='over_request_rate_limit'||err?.status===429)return 'Too many requests. Please wait a moment and try again.';
+      if(code==='weak_password')return 'Choose a stronger password with at least 12 characters.';
+      if(code==='user_already_exists')return 'If you already have an account, sign in or request a new confirmation link.';
+      if(!navigator.onLine||err?.name==='AuthRetryableFetchError'||err?.name==='TypeError')return 'Connection unavailable. Check your internet connection and try again.';
+      return register?'Account creation could not be confirmed. Check your email or try signing in.':'Sign-in could not be completed. Check your details and try again.';
+    }
+    function confirmationReturn(){
+      const query=new URLSearchParams(location.search),hash=new URLSearchParams(location.hash.slice(1));
+      const get=k=>hash.get(k)||query.get(k);
+      const type=get('type');
+      return {attempt:type==='signup'||type==='email'||query.has('code')||!!get('error_code')||!!get('error'),error:get('error_code')||get('error')||'',hasToken:!!get('access_token')||query.has('code')};
+    }
+    function clearConfirmationParameters(){
+      const u=new URL(location.href);
+      for(const k of ['code','error','error_code','error_description','type','access_token','refresh_token','expires_at','expires_in','token_type'])u.searchParams.delete(k);
+      const h=new URLSearchParams(u.hash.slice(1));
+      if(['access_token','refresh_token','error','error_code','type'].some(k=>h.has(k)))u.hash='';
+      history.replaceState(history.state,'',u.href);
+    }
+    const confirmationMessage=code=>code==='otp_expired'||code==='access_denied'?'Confirmation link expired or already used. If you already verified your email, sign in. Otherwise request a new confirmation email below.':'We could not complete email confirmation. If your email is already verified, sign in; otherwise request a new link.';
     function signInView(message='',register=false){
       document.querySelector('.sticky-nav').hidden=true;
       const signOut=document.getElementById('liveLogout');if(signOut)signOut.hidden=true;
-      main.innerHTML=`<div class="pagehead"><h1>${register?'Create Account':'Sign In'}</h1></div><div class="notice">Private alpha. Virtual Tokens only. Verify your email to start playing.</div><form id="liveLogin" class="shell-section"><label class="form-label" for="liveEmail">Email</label><input class="field" id="liveEmail" type="email" autocomplete="email" required><label class="form-label" for="livePassword">Password</label><input class="field" id="livePassword" type="password" autocomplete="${register?'new-password':'current-password'}" ${register?'minlength="12"':''} required>${register?'<p class="fineprint">Use at least 12 characters. Verify your email before signing in.</p>':''}<button class="btn fill" style="margin-top:14px" type="submit">${register?'Create Account':'Sign In'}</button><p id="liveLoginStatus" role="status">${safe(message)}</p></form><button class="btn secondary fill" id="liveAuthToggle">${register?'Already have an account? Sign In':'New to Subway Exchange? Create Account'}</button><p class="fineprint">Your session stays signed in on this browser until you sign out or it is invalidated.</p>`;
+      main.innerHTML=`<div class="pagehead"><h1>${register?'Create Account':'Sign In'}</h1></div><div class="notice">Private alpha. Virtual Tokens only. Verify your email to start playing.</div><form id="liveLogin" class="shell-section"><label class="form-label" for="liveEmail">Email</label><input class="field" id="liveEmail" type="email" autocomplete="email" required><label class="form-label" for="livePassword">Password</label><input class="field" id="livePassword" type="password" autocomplete="${register?'new-password':'current-password'}" ${register?'minlength="12"':''} required>${register?'<p class="fineprint">Use at least 12 characters. Verify your email before signing in.</p>':''}<button class="btn fill" style="margin-top:14px" type="submit">${register?'Create Account':'Sign In'}</button><p id="liveLoginStatus" role="status">${safe(message)}</p></form>${!register?'<button class="btn secondary fill" type="button" id="liveResendConfirmation">Resend Confirmation Email</button>':''}<button class="btn secondary fill" id="liveAuthToggle">${register?'Already have an account? Sign In':'New to Subway Exchange? Create Account'}</button><p class="fineprint">Your session stays signed in on this browser until you sign out or it is invalidated.</p>`;
       document.getElementById('liveAuthToggle').onclick=()=>signInView('',!register);
+      const resend=document.getElementById('liveResendConfirmation');
+      if(resend)resend.onclick=async()=>{
+        if(authStarting||authSigningOut||!authClient)return;
+        const input=document.getElementById('liveEmail'),status=document.getElementById('liveLoginStatus');
+        if(!input.reportValidity())return;
+        authStarting=true;resend.disabled=true;status.textContent='Requesting confirmation email...';
+        try{
+          const {error}=await authClient.auth.resend({type:'signup',email:input.value.trim(),options:{emailRedirectTo:redirectUrl()}});
+          if(error)throw error;
+          status.textContent='If your account needs verification, a new confirmation email has been requested. Check your inbox and spam folder.';
+        }catch(err){status.textContent=authErrorMessage(err,true);}
+        finally{authStarting=false;if(resend.isConnected)resend.disabled=false;}
+      };
       document.getElementById('liveLogin').onsubmit=async e=>{
         e.preventDefault();if(authStarting||authSigningOut||!authClient)return;
         const form=e.currentTarget,btn=form.querySelector('button'),password=document.getElementById('livePassword'),email=document.getElementById('liveEmail').value.trim();
@@ -82,13 +119,13 @@ window.SubwayLivePreview = {
           if(register){
             const {data,error}=await authClient.auth.signUp({email,password:password.value,options:{emailRedirectTo:redirectUrl()}});if(error)throw error;
             if(data.session&&verifiedUser(data.user)){await enterSession(data.session);}
-            else{if(data.session)await authClient.auth.signOut({scope:'local'});signInView('Check your email for a verification link. Once verified, sign in.');}
+            else{if(data.session)await authClient.auth.signOut({scope:'local'});signInView('Check your email. Open the confirmation link to verify your account, then sign in if needed.');}
           }else{
             const {data,error}=await authClient.auth.signInWithPassword({email,password:password.value});if(error||!data.session)throw error||Error('No session');
             if(!verifiedUser(data.user)){await authClient.auth.signOut({scope:'local'});signInView('Please verify your email before signing in.');return;}
             await enterSession(data.session);
           }
-        }catch(err){if(!state.token){const status=document.getElementById('liveLoginStatus');if(status)status.textContent=register?'Account creation could not be confirmed. Check your email or try signing in.':'Sign-in failed. Check your credentials, email verification or connection.';}else{showToast('Account setup unavailable. Refresh to retry.');}}
+        }catch(err){if(!state.token){const status=document.getElementById('liveLoginStatus');if(status)status.textContent=authErrorMessage(err,register);}else{showToast('Account setup unavailable. Refresh to retry.');}}
         finally{password.value='';authStarting=false;if(btn.isConnected)btn.disabled=false;if(toggle.isConnected)toggle.disabled=false;}
       };
     }
@@ -104,6 +141,7 @@ window.SubwayLivePreview = {
       }catch(err){if(gen===state.generation){state.token=null;authUserId=null;state.generation++;main.innerHTML='<div class="notice">Account setup could not be completed. Your session is retained.</div><button class="btn fill" id="retryAuth">Retry</button>';document.getElementById('retryAuth').onclick=()=>location.reload();}throw err;}
     }
     async function bootAuth(){
+      const confirmation=confirmationReturn();
       main.innerHTML='<div class="notice" role="status">Restoring your session...</div>';
       try{
         const {createClient}=await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/+esm');
@@ -115,10 +153,26 @@ window.SubwayLivePreview = {
           else if(session&&session.user.id===authUserId){state.token=session.access_token;}
           else if(session&&session.user.id!==authUserId){setTimeout(()=>location.reload(),0);}
         });
-        const {data,error}=await authClient.auth.getSession();if(error)throw error;
+        const {data,error}=await authClient.auth.getSession();
         authReady=true;
-        if(data.session&&verifiedUser(data.session.user)){await enterSession(data.session);}
-        else{if(data.session)await authClient.auth.signOut({scope:'local'});signInView(data.session?'Please verify your email before signing in.':'');}
+        if(error){if(confirmation.attempt){clearConfirmationParameters();signInView(confirmationMessage(confirmation.error||error.code));return;}throw error;}
+        if(data.session&&verifiedUser(data.session.user)){
+          let confirmed=false;
+          if(confirmation.attempt&&!confirmation.error&&confirmation.hasToken){
+            try{const result=await authClient.auth.getUser();confirmed=!result.error&&verifiedUser(result.data?.user)&&result.data.user.id===data.session.user.id;}catch{}
+          }
+          if(confirmation.attempt)clearConfirmationParameters();
+          await enterSession(data.session);
+          if(confirmed||confirmation.error){
+            const feedback=document.createElement('div');feedback.id='liveAuthFeedback';feedback.className=confirmed?'success':'error';feedback.setAttribute('role','status');
+            feedback.textContent=confirmed?'Email confirmed! Your account is verified and ready to play.':'This confirmation link could not be used. You are signed in to an already verified account.';
+            main.prepend(feedback);
+          }
+        }else{
+          if(data.session)await authClient.auth.signOut({scope:'local'});
+          if(confirmation.attempt)clearConfirmationParameters();
+          signInView(confirmation.attempt?confirmationMessage(confirmation.error):data.session?'Please verify your email before signing in.':'');
+        }
       }catch(e){main.innerHTML='<div class="notice" role="status">Unable to restore authentication. Check your connection and retry. Your saved session has not been deliberately cleared.</div><button class="btn fill" id="retryAuth">Retry</button>';document.getElementById('retryAuth').onclick=()=>location.reload();}
     }
     function renderShell(){
@@ -159,6 +213,7 @@ window.SubwayLivePreview = {
       document.getElementById('livePurchase')?.remove();document.body.classList.remove('modal-open');
       const token=state.token;state.generation++;state.token=null;state.rows=[];state.board.clear();clearTimeout(state.toastTimer);const toastSlot=document.getElementById('toastSlot');if(toastSlot)toastSlot.innerHTML='';state.settlementSeen=null;state.expandedTickets.clear();state.evidenceTickets.clear();state.player=null;state.error='';state.updated=null;state.busy=false;state.tickets=null;state.portfolioError='';state.portfolioBusy=false;state.tab='lines';state.portfolioTab='active';state.txRows=null;state.txFilter='ALL';state.txBusy=false;state.txMore=false;state.txError='';state.txEpoch++;state.txExpanded.clear();state.txUpdated=0;state.purchase=null;state.purchaseBusy=false;state.notice='';state.rewards=null;state.referrals=null;state.avatarLine="6";state.receipts=null;state.avatarBusy=false;state.rewardInfo=false;state.meBusy=false;state.meError='';state.meDraft=null;state.accountEmail='';state.rewardBusy=false;state.socialEpoch++;state.socialBusy=false;state.crews=[];state.crewRows=[];state.rankRows=[];state.crewId=null;state.inviteCode='';state.crewSettings=false;state.socialError='';document.getElementById('liveSocialStyle')?.remove();document.getElementById('weeklyCelebrate')?.remove();
       document.getElementById('headerBalance').textContent='\u2014';signInView(message);
+
 
     }
     function visibleRows(){
@@ -304,7 +359,7 @@ window.SubwayLivePreview = {
         const timeLabel=new Date(t.created_at).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit'})+' ET';
         const icon=t.route_id&&t.ticket_id?classicBullet(t.route_id,'small'):`<span class="tx-symbol" aria-hidden="true">${safe(symbol)}</span>`;
         const amount=`<span class="${tone(t.delta_minor)}">${signedCash(t.delta_minor)}</span>`;
-        return heading+`<div class="tx-entry"><button type="button" class="tx-row" ${t.ticket_id?`data-tx-detail="${safe(t.transaction_id)}" aria-expanded="${expanded}"`:'disabled'}>${icon}<span class="tx-description"><strong>${safe(label)}</strong><small>${(context?safe(context)+' &middot; ':'')+safe(timeLabel)}</small></span><span class="tx-amount"><strong>${amount}</strong><small>Bal: ${cash(minor(t.balance_minor))}</small></span><span class="tx-chevron" aria-hidden="true">${t.ticket_id?`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#A7B6C8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${expanded?'M6 9l6 6 6-6':'M15 6l-6 6 6 6'}"/></svg>`:''}</span></button>${expanded&&t.ticket_id?`<div class="tx-detail">${ticket?card(ticket):`<p>${safe(t.market_name||'Prediction')} &middot; ${safe(context)}</p><p>Transaction recorded ${safe(dateTime(t.created_at))}</p>`}</div>`:''}</div>`;
+        return heading+`<div class="tx-entry"><button type="button" class="tx-row" ${t.ticket_id?`data-tx-detail="${safe(t.transaction_id)}" aria-expanded="${expanded}"`:'disabled'}>${icon}<span class="tx-description"><strong>${safe(label)}</strong><small>${(context?safe(context)+' &middot; ':'')+safe(timeLabel)}</small></span><span class="tx-amount"><strong>${amount}</strong><small class="tx-balance"><span>Balance:</span> ${cash(minor(t.balance_minor))}</small></span><span class="tx-chevron" aria-hidden="true">${t.ticket_id?`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#A7B6C8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${expanded?'M6 9l6 6 6-6':'M15 6l-6 6 6 6'}"/></svg>`:''}</span></button>${expanded&&t.ticket_id?`<div class="tx-detail">${ticket?card(ticket):`<p>${safe(t.market_name||'Prediction')} &middot; ${safe(context)}</p><p>Transaction recorded ${safe(dateTime(t.created_at))}</p>`}</div>`:''}</div>`;
       }).join('');
       return `<div class="tx-section"><div class="tx-heading"><h2>Token Activity</h2><select id="liveTxFilter" aria-label="Transaction filter" class="field tx-filter">${[['ALL','All Transactions'],['PREDICTIONS','Predictions'],['REWARDS','Rewards']].map(([v,l])=>`<option value="${v}" ${v===state.txFilter?'selected':''}>${l}</option>`).join('')}</select></div>${state.txError?`<p class="notice" role="status">${safe(state.txError)} <button class="tiny-action" id="liveTxRetry">Retry</button></p>`:''}${content||(!state.txBusy?'<div class="empty">No transactions yet.</div>':'')} ${state.txBusy?'<p class="fineprint" role="status">Loading transactions&hellip;</p>':state.txMore?'<button class="btn secondary fill" id="liveTxMore">Load More</button>':''}<button type="button" class="tiny-action" id="liveTxRefresh" ${state.txBusy?'disabled':''}>Refresh Transactions</button><p class="fineprint">All times Eastern. Balances reflect all transactions, including those hidden by filters. Token values are rounded for display.</p></div>`;
     }
@@ -323,6 +378,39 @@ window.SubwayLivePreview = {
     }
     function openTransactions(){state.portfolioTab='transactions';if(state.tab==='portfolio'){renderPortfolio();loadTransactions();}else switchTab('portfolio');}
     const txStyle=document.createElement('style');txStyle.textContent=`#livePortfolio .segment.tx-tabs button{flex:1;min-width:0;padding:9px 4px;font-size:12px;white-space:normal} .tx-section{margin-top:18px}.tx-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}.tx-heading h2{font-size:15px;margin:0;white-space:nowrap}.tx-filter{width:auto!important;min-width:0;font-size:12px;padding:7px 28px 7px 9px;appearance:none;-webkit-appearance:none;background-image:url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2216%22 height=%2216%22 viewBox=%220 0 24 24%22%3E%3Cpath d=%22m6 9 6 6 6-6%22 fill=%22none%22 stroke=%22%23dce7f0%22 stroke-width=%222.5%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E');background-repeat:no-repeat;background-position:right 7px center;background-size:16px}.tx-date{font-size:12px;color:var(--muted,#a7b6c8);margin:16px 0 5px}.tx-entry{border-bottom:1px solid rgba(167,182,200,.18)}.tx-row{display:flex;width:100%;align-items:center;text-align:left;gap:9px;padding:12px 0;color:inherit;background:none;border:0;font:inherit}.tx-row:not(:disabled){cursor:pointer}.tx-row:disabled{opacity:1;cursor:default}.tx-symbol{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;background:rgba(167,182,200,.12);font-size:17px;flex:none}.tx-description{min-width:0;flex:1}.tx-description strong,.tx-amount strong{display:block;font-size:13px}.tx-description small,.tx-amount small{display:block;color:var(--muted,#a7b6c8);font-size:11px;margin-top:3px}.tx-amount{text-align:right;flex-shrink:0}.tx-amount .up{color:#4ade80}.tx-amount .down{color:#f87171}.tx-chevron{display:flex;align-items:center;justify-content:center;flex:0 0 16px;width:16px;color:#a7b6c8}.tx-detail{padding:0 0 10px}.tx-detail .ticket{margin-top:0}#liveTxMore{margin-top:12px}#liveTxRefresh{display:block;margin:12px auto 0}`;document.head.appendChild(txStyle);
+    const portfolioStyle=document.createElement('style');
+    portfolioStyle.textContent=`
+      .app #main {min-width:0;max-width:100%;width:100%;box-sizing:border-box}
+      #livePortfolio {width:100%;min-width:0;max-width:100%;box-sizing:border-box}
+      #livePortfolio > *, #livePortfolio .ticket, #livePortfolio .tx-entry, #livePortfolio .tx-detail {min-width:0;max-width:100%;box-sizing:border-box}
+      #livePortfolio .summary-grid {grid-template-columns:repeat(3,minmax(0,1fr));width:100%}
+      #livePortfolio .summary-box {min-width:0;display:flex;flex-direction:column;justify-content:space-between}
+      #livePortfolio .summary-box small {white-space:normal;overflow-wrap:anywhere}
+      #livePortfolio .summary-box strong {min-width:0;white-space:normal;overflow-wrap:anywhere}
+      #livePortfolio .summary-box .money-inline {max-width:100%;white-space:normal;justify-content:flex-start}
+      #livePortfolio .summary-box .money-inline > span {min-width:0;overflow-wrap:anywhere}
+      #livePortfolio .segment.tx-tabs {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));width:100%;overflow:visible}
+      #livePortfolio .segment.tx-tabs button {width:100%;min-width:0;overflow-wrap:anywhere}
+      #livePortfolio .ticket-top {display:grid;grid-template-columns:auto minmax(0,1fr) minmax(0,max-content);align-items:start}
+      #livePortfolio .ticket-top .txt {min-width:0;overflow-wrap:anywhere}
+      #livePortfolio .ticket-top .right {min-width:0;max-width:100%;text-align:right}
+      #livePortfolio .ticket-top .right .badge {white-space:normal;overflow-wrap:anywhere}
+      #livePortfolio .ticket-detail,#livePortfolio .history-explain {min-width:0;overflow-wrap:anywhere}
+      #livePortfolio .detail-line {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
+      #livePortfolio .detail-line strong {min-width:0;text-align:right;overflow-wrap:anywhere}
+      #livePortfolio .tx-heading {min-width:0;flex-wrap:wrap}
+      #livePortfolio .tx-filter {max-width:100%}
+      #livePortfolio .tx-row {display:grid;grid-template-columns:30px minmax(0,1fr) minmax(0,max-content) 16px;gap:8px;box-sizing:border-box}
+      #livePortfolio .tx-description {min-width:0;overflow-wrap:anywhere}
+      #livePortfolio .tx-amount {min-width:0;max-width:100%;text-align:right;font-variant-numeric:tabular-nums}
+      #livePortfolio .tx-amount .tx-balance {display:flex;align-items:center;justify-content:flex-end;gap:3px;flex-wrap:wrap}
+      #livePortfolio .tx-chevron {width:16px;justify-self:end}
+      #livePortfolio .tx-row > .roundel {width:30px;height:30px}
+      @media(max-width:380px){#livePortfolio .summary-box{padding:8px 5px}#livePortfolio .summary-box strong{font-size:13px}#livePortfolio .tx-row{gap:5px}#livePortfolio .tx-amount strong{font-size:12px}}
+      #liveAuthFeedback {margin:12px 0;padding:12px;border:1px solid #59718a;border-radius:10px;overflow-wrap:anywhere}
+      #liveAuthFeedback.success {border-color:#49a678;color:#83d6b2}
+      #liveAuthFeedback.error {border-color:#ad5364;color:#ffb5b5}
+    `;document.head.appendChild(portfolioStyle);
     function renderPortfolio(){
       const el=document.getElementById('livePortfolio');if(!el||state.tab!=='portfolio')return;
       const all=state.tickets||[], history=all.filter(completed).sort((a,b)=>Date.parse(b.closed_at)-Date.parse(a.closed_at)), active=all.filter(t=>!completed(t));
@@ -378,24 +466,43 @@ window.SubwayLivePreview = {
       }finally{if(gen===state.generation){state.portfolioBusy=false;renderPortfolio();renderMe();if(state.tab==='portfolio'&&state.portfolioTab==='transactions'&&!state.txBusy&&!state.txError&&(state.txRows?.length??0)<=30&&Date.now()-state.txUpdated>15000)loadTransactions();}}
     }
 
+
     const routeColors={ALL:'#3e526a','1':'#EE352E','2':'#EE352E','3':'#EE352E','4':'#00933C','5':'#00933C','6':'#00933C','7':'#B933AD',A:'#0039A6',C:'#0039A6',E:'#0039A6',B:'#FF6319',D:'#FF6319',F:'#FF6319',M:'#FF6319',G:'#6CBE45',J:'#996633',Z:'#996633',L:'#A7A9AC',N:'#FCCC0A',Q:'#FCCC0A',R:'#FCCC0A',W:'#FCCC0A',S:'#808183'};
     let selectedRoute='ALL',selectedType='All Types',lineConfig=new Map(),configSignature='';
     const typeLabel=t=>t==='NEXT_TRAIN'?'Next Train':t==='UPCOMING_TRAIN'?'Upcoming Train':String(t).toLowerCase().replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
-    function availableTypes(){return new Set(['All Types',...[...lineConfig.values()].filter(l=>l.enabled&&(selectedRoute==='ALL'||l.route_id===selectedRoute)).flatMap(l=>l.market_types.map(typeLabel))]);}
+    function availableMarketRows(){
+      // Use the latest successful snapshot; brief quote refreshes do not remove filters.
+      // Quotes still must pass visibleRows() before a prediction can be purchased.
+      const now=Date.now()+state.offset;
+      return state.rows.filter(r=>lineConfig.get(r.route)?.enabled===true &&
+        Date.parse(r.lock_at)>now && r.quotes.YES && r.quotes.NO &&
+        ['YES','NO'].every(side=>Date.parse(r.quotes[side].quote_expires_at)+6000>now));
+    }
+    function availableTypes(){return new Set(['All Types',...availableMarketRows().filter(r=>selectedRoute==='ALL'||r.route===selectedRoute).map(r=>r.type)]);}
     function applyLineConfig(config){
       if(!Array.isArray(config?.lines))throw Error('Invalid line configuration');
       const next=new Map();for(const l of config.lines){if(!/^[A-Z0-9]{1,3}$/.test(l.route_id)||!Array.isArray(l.market_types))continue;next.set(l.route_id,l);if(/^#[0-9a-f]{6}$/i.test(l.color))routeColors[l.route_id]=l.color;}
-      const signature=JSON.stringify([...next]);lineConfig=next;
-      if(selectedRoute!=='ALL'&&!lineConfig.get(selectedRoute)?.enabled)selectedRoute='ALL';
-      if(!availableTypes().has(selectedType))selectedType='All Types';
-      if(signature!==configSignature){configSignature=signature;renderLineFilters();}
+      lineConfig=next;
     }
     function renderLineFilters(){
       const el=main.querySelector('[data-live-lines].filters-section');if(!el)return;
-      const types=availableTypes();const allTypes=[...new Set(['All Types','Next Train','Upcoming Train','Beat the MTA','Rush Hour','Line Wars',...types])];
-      const enabled=r=>r==='ALL'||lineConfig.get(r)?.enabled===true;
-      el.innerHTML=`<div class="section-label"><h2>Choose Your Line</h2><span class="dashes"></span></div><div class="routebar" role="group" aria-label="Filter markets by subway line">${Object.keys(routeColors).map(r=>`<button class="route-filter ${r===selectedRoute?'is-on':''}" data-route="${safe(r)}" aria-pressed="${r===selectedRoute}" aria-label="${r==='ALL'?'All lines':'Line '+safe(r)}${enabled(r)?'':' unavailable'}" ${enabled(r)?'':'disabled'}>${classicBullet(r,r==='ALL'?'all':'')}</button>`).join('')}</div><div class="chiprow" role="group" aria-label="Filter markets by category">${allTypes.map(t=>`<button class="chip ${t===selectedType?'is-on':''}" data-type="${safe(t)}" aria-pressed="${t===selectedType}" ${types.has(t)?'':'disabled'}>${safe(t)}</button>`).join('')}</div>`;
-      el.querySelectorAll('button:not(:disabled)').forEach(b=>b.onclick=()=>{if(b.dataset.route)selectedRoute=b.dataset.route;if(b.dataset.type)selectedType=b.dataset.type;if(!availableTypes().has(selectedType))selectedType='All Types';renderLineFilters();renderClassicRows();});
+      const routes=new Set(availableMarketRows().map(r=>r.route));
+      if(selectedRoute!=='ALL'&&!routes.has(selectedRoute))selectedRoute='ALL';
+      const types=availableTypes();
+      if(!types.has(selectedType))selectedType='All Types';
+      const allTypes=[...new Set(['All Types','Next Train','Upcoming Train','Beat the MTA','Rush Hour','Line Wars',...types])];
+      const orderedRoutes=['ALL',...Object.keys(routeColors).filter(r=>r!=='ALL'&&routes.has(r))];
+      const signature=JSON.stringify([selectedRoute,selectedType,orderedRoutes.map(r=>[r,routeColors[r]]),allTypes.map(t=>[t,types.has(t)])]);
+      if(signature===configSignature&&el.querySelector('.routebar'))return;
+      configSignature=signature;
+      const routeScroll=el.querySelector('.routebar')?.scrollLeft||0,typeScroll=el.querySelector('.chiprow')?.scrollLeft||0;
+      el.innerHTML=`<div class="section-label"><h2>Choose Your Line</h2><span class="dashes"></span></div><div class="routebar" role="group" aria-label="Filter markets by subway line">${orderedRoutes.map(r=>`<button type="button" class="route-filter ${r===selectedRoute?'is-on':''}" data-route="${safe(r)}" aria-pressed="${r===selectedRoute}" aria-label="${r==='ALL'?'All lines':'Line '+safe(r)}">${classicBullet(r,r==='ALL'?'all':'')}</button>`).join('')}</div><div class="chiprow" role="group" aria-label="Filter markets by category">${allTypes.map(t=>`<button class="chip ${t===selectedType?'is-on':''}" data-type="${safe(t)}" aria-pressed="${t===selectedType}" ${types.has(t)?'':'disabled'}>${safe(t)}</button>`).join('')}</div>`;
+      el.querySelector('.routebar').scrollLeft=routeScroll;el.querySelector('.chiprow').scrollLeft=typeScroll;
+      el.querySelectorAll('button:not(:disabled)').forEach(b=>b.onclick=()=>{
+        if(b.dataset.route)selectedRoute=selectedRoute===b.dataset.route?'ALL':b.dataset.route;
+        if(b.dataset.type)selectedType=selectedType===b.dataset.type?'All Types':b.dataset.type;
+        renderLineFilters();renderClassicRows();
+      });
     }
     const classicBullet=(r,size='')=>`<span class="roundel ${size}" style="--bg:${routeColors[r]||'#3e526a'};--fg:${['N','Q','R','W'].includes(r)?'#17253a':'#fff'}">${safe(r)}</span>`;
     function tokenMark(){return '<svg class="mini-token" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18.5" fill="#FFCB23"/><circle cx="20" cy="20" r="13.5" fill="none" stroke="#B78308" stroke-width="2"/></svg>';}
@@ -411,6 +518,7 @@ window.SubwayLivePreview = {
     }
     function renderClassicRows(){
       if(!state.token||state.tab!=='lines'||!document.getElementById('liveCards'))return;
+      renderLineFilters();
       const host=document.getElementById('liveCards'),now=Date.now()+state.offset;
       const matches=r=>lineConfig.get(r.route)?.enabled===true&&(selectedRoute==='ALL'||r.route===selectedRoute)&&(selectedType==='All Types'||r.type===selectedType);
       const fresh=new Map(visibleRows().filter(matches).map(r=>[r.market_id,r]));
@@ -515,6 +623,8 @@ window.SubwayLivePreview = {
     function showClassicTrain(route='6'){const el=document.createElement('div');el.className='train-overlay';el.innerHTML='<div class="train-stage"><div class="train"><div class="trainwindow"></div><div class="trainwindow"></div>'+classicBullet(route)+'<div class="trainwindow"></div></div></div><div class="train-label">TICKET PUNCHED</div>';document.body.appendChild(el);setTimeout(()=>el.remove(),2700);}
 
 
+
+
     // The backend is the sole authority for grants, username and balances.
     async function collectRewards(){
       if(!state.token||state.rewardBusy)return;
@@ -577,6 +687,7 @@ window.SubwayLivePreview = {
       catch(e){if(gen===state.generation)state.meError='Unable to save username. It may be unavailable. Try another name.';}
       finally{if(gen===state.generation){state.meBusy=false;if(!state.meError)await refreshMe();else renderMe();}}
     }
+
 
     // Real Crew and ranking APIs. No mock standings or test scores.
     const socialTabs=(items,selected)=>'<div class="segment compact-segment">'+items.map(([v,l])=>`<button type="button" data-social-tab="${v}" class="${v===selected?'is-on':''}" ${state.socialBusy?'disabled':''}>${l}</button>`).join('')+'</div>';
@@ -643,6 +754,7 @@ window.SubwayLivePreview = {
       catch(e){if(gen===state.generation)state.socialError='Action could not be confirmed. Refresh before retrying; the request may have reached the server.';}
       finally{if(gen===state.generation){state.socialBusy=false;if(ok)refreshSocial();else renderSocial();}}
     }
+
 
     bootAuth();
     setInterval(()=>{if(state.token&&!document.hidden){if(state.tab==='portfolio')renderPortfolio();else if(state.tab==='lines')renderRows();}},1000);
