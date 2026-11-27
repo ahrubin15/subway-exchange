@@ -1,45 +1,11 @@
-# Subway Exchange — Development Foundation
+# Subway Exchange — Offline Replay Prototype
 
-A free-to-play fictional-token NYC transit prediction game. **Not real-money betting.**
+Research only. No database connections, network calls, production writes, or deployment.
 
-## Current Status
+Run `python -m unittest -v` in this folder (Python 3.10+; standard library only).
+Run `python replay.py /path/to/raw-snapshots --output replay-results.json --stops approved-stops.json`.
+Input filenames must contain the collector's UTC timestamp (`2026-11-27T21-00-05-795Z`); raw `.pb` or `.pb.gz` supported. Approved stops JSON maps route strings to lists of directional station IDs. Without it, all numeric directional stops on routes 1,2,3,4,6,7 are considered, not just live stations.
 
-- `index.html` — approved v0.6.1 frontend review; deployable unchanged using GitHub Pages `main / (root)`.
-- All frontend markets, odds, accounts, settlements, and tokens in this file are **DEMO ONLY**, maintained in the browser.
-- `docs/design/v0.6.1.html` — immutable design reference snapshot.
-- `frontend/`, `backend/`, `data/`, `tests/` — foundation for future real integration, not functioning backend services yet.
-- `.github/workflows/checks.yml` — no-dependency safety checks for commits/PRs.
+The prototype evaluates -90 through +60 seconds in 15-second increments, with 5/7/10-minute verification windows. Only completed observation windows enter the experiment. It uses a conservative arrival interval from stopped, upstream and downstream evidence; ambiguous outcomes are void. The simplified research labeler is not yet proven equivalent to production V4 (no static route topology fallback; sequence evidence and conflicts require further validation). Baseline probabilities are an opening-time logistic benchmark, not trained calibration or live executable quotes. No dynamic deadline selector is promoted or fitted yet. The candidate generator uses first eligible trip/stop and a 6–16 minute initial ETA window, not the exact production market selection policy.
 
-## Preserve Your Current Website
-
-A GitHub Pages deployment from `main / (root)` needs `index.html` at repository root. This package intentionally keeps it there. **Do not delete or rename that file.**
-
-Before replacing the existing repository, create a backup branch or use GitHub's commit history to preserve the current version. Only overwrite the site after verifying you want this exact baseline.
-
-## Run Local Checks
-
-```bash
-python3 -m unittest discover -s tests -v
-```
-
-Checks validate file presence, markup entrypoints and that the original approved HTML is byte-for-byte preserved. They **do not** prove live MTA feeds, real settlement, secure authentication, or mobile Safari gestures.
-
-## Recommended Build Order
-
-1. Confirm deployment/environment choice and costs (see `docs/architecture.md`).
-2. Create isolated development secrets/credentials; never commit `.env` or API keys.
-3. Implement MTA feed polling/archive and evidence-health reporting.
-4. Forward-only shadow markets against real future events.
-5. Implement server-side predictions, atomic wallet, and settlement; then connect frontend.
-6. Add persistent user identity, Crews and rankings, in-app notifications, analytics and owner controls.
-
-## Deploy
-
-For the **current demo** keep GitHub Pages set to `Deploy from a branch` / `main` / `/(root)`. After a commit, check the Pages status. This foundation does not require GitHub Actions to deploy Pages.
-
-## Important Restrictions
-
-- Never expose credentials or service-role secrets in browser code.
-- Never let clients specify final outcome, balance, payouts, or ledger entries.
-- Public beta requires real data-use/legal review, settlement evidence gates, and account protection.
-- $100 USD per month ceiling is an operating requirement; **billing alerts are not hard spending caps**.
+Next: verify archived snapshot parsing against real data; obtain the exact approved station registry; benchmark coverage and evidence labels against production audits; optimize replay with indexed per-trip histories; fit on chronological training cohorts and evaluate on separate later days, grouping trips to avoid leakage. Evaluate candidate opening balance, void rates, Brier score, calibration, market coverage and route-level degradation before proposing deployment. Retain 4 percentage points combined margin (2 per side) independently of fair probability.
